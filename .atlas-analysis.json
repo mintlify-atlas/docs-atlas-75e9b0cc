@@ -1,0 +1,103 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "DOOM Neuron",
+  "projectDescription": "Train biological neurons (CL1) to play DOOM using Proximal Policy Optimization and spiking neural networks.",
+  "theme": "aspen",
+  "primaryColor": "#8B0000",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/ppo-training",
+              "concepts/neural-interface",
+              "concepts/feedback-system"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/local-setup",
+              "guides/remote-training",
+              "guides/scenarios",
+              "guides/checkpoint-management"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/ppo-config",
+              "configuration/encoder-decoder",
+              "configuration/action-spaces",
+              "configuration/feedback-tuning"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/ablations",
+              "advanced/curriculum-learning",
+              "advanced/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Scripts",
+            "pages": [
+              "api/ppo-doom",
+              "api/training-server",
+              "api/cl1-interface",
+              "api/udp-protocol"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/config-reference",
+              "api/event-feedback"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "PPO-based reinforcement learning for biological neurons",
+    "Real-time UDP communication with CL1 neural hardware",
+    "Encoder-decoder architecture for neural stimulation and spike decoding",
+    "Multiple DOOM scenarios with curriculum learning",
+    "Dynamic feedback system with surprise-based scaling",
+    "Ablation modes for validating neural contributions",
+    "TensorBoard integration for training monitoring",
+    "Checkpoint management for model persistence"
+  ],
+  "publicApiSurface": [
+    "ppo_doom.py - Standalone PPO training script",
+    "training_server.py --mode train - Start training server",
+    "training_server.py --mode watch - Run inference with trained model",
+    "cl1_neural_interface.py - CL1 hardware interface server",
+    "PPOConfig - Main configuration dataclass",
+    "EventFeedbackConfig - Feedback configuration",
+    "udp_protocol.pack_stim_command() - Pack stimulation command",
+    "udp_protocol.unpack_spike_data() - Unpack spike response",
+    "udp_protocol.pack_feedback_command() - Pack feedback command"
+  ]
+}
