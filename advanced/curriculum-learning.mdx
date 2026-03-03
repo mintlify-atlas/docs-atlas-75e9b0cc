@@ -1,0 +1,391 @@
+---
+title: "Curriculum Learning"
+description: "Progressive difficulty training with the deadly corridor curriculum (levels 1-5)"
+---
+
+## Overview
+
+The deadly corridor curriculum provides a structured progression from basic survival skills to complex combat scenarios. Training on levels 1-4 builds fundamental movement and targeting policies, while level 5 serves as the ultimate benchmark.
+
+<Warning>
+`deadly_corridor_5.cfg` is a **significant jump** from level 4. Habits learned in 1-4 (like straight running toward armor) may underperform on level 5. Adjust curriculum pacing accordingly.
+</Warning>
+
+## Available Scenarios
+
+### Deadly Corridor Curriculum
+
+All configs use `deadly_corridor.wad`:
+
+| Config | Difficulty | Description |
+|--------|-----------|-------------|
+| `deadly_corridor_1.cfg` | Beginner | Minimal enemies, ample resources |
+| `deadly_corridor_2.cfg` | Easy | Slightly more enemies, tighter spacing |
+| `deadly_corridor_3.cfg` | Medium | Balanced challenge, requires dodging |
+| `deadly_corridor_4.cfg` | Hard | Dense enemy placement, ammo scarcity |
+| `deadly_corridor_5.cfg` | Benchmark | **Extreme difficulty**, official test level |
+
+<Tip>
+Progress through 1-4 builds basic policies yet may result in movement habits that underperform on 5 (straight running toward armor). Fine-tune on level 5 with a lower learning rate to adapt movement behavior.
+</Tip>
+
+### Other Scenarios
+
+**Progressive Deathmatch (Default)**
+
+```python
+config = PPOConfig(doom_config="progressive_deathmatch.cfg")
+```
+
+- Similar to survival, but kills don't reset ammo count
+- Encourages proper ammo management
+- Movement tweaks make training easier
+- Uses `progressive_deathmatch.wad`
+
+**Survival**
+
+```python
+config = PPOConfig(doom_config="survival.cfg")
+```
+
+- Classic survival mode
+- Uses `survival.wad`
+
+## Curriculum Design Principles
+
+From README.md (lines 22-23):
+
+> Files `deadly_corridor_1.cfg` to `deadly_corridor_4.cfg` ramp difficulty gradually, but `deadly_corridor_5.cfg` is a significant jump (and the actual benchmark). Progress through 1-4 builds basic policies yet may result in movement habits that underperform on 5 (straight running toward armor). Adjust curriculum pacing accordingly.
+
+### Why Progressive Training Matters
+
+Starting directly on level 5 often results in:
+- Random exploration with minimal reward signal
+- High variance in policy gradients
+- Slow or failed convergence
+- Neurons receiving noisy, uninformative feedback
+
+Curriculum learning provides:
+- Gradual skill acquisition (movement → targeting → tactics)
+- Stronger reward signals early in training
+- More stable policy updates
+- Conditioned neurons with meaningful stimulus-response mappings
+
+## Configuration for Deadly Corridor
+
+### Architecture & Feedback Tuning
+
+<Warning>
+The specific values below are tuned for the deadly corridor scenario (`deadly_corridor_1.cfg` – `deadly_corridor_5.cfg`). Treat them as a starting point only — other scenarios (progressive deathmatch, survival) will likely require different values for feedback scaling, reward shaping, ray-cast geometry, and curriculum pacing.
+</Warning>
+
+**From README.md lines 25-41:**
+
+```python
+config = PPOConfig(
+    # Reward feedback
+    use_reward_feedback=True,  # Uses rewards to drive positive/negative feedback
+    
+    # Decoder configuration
+    decoder_enforce_nonnegative=False,
+    decoder_freeze_weights=False,  # Decoder stays free to mirror encoder intent
+    decoder_zero_bias=True,  # Keeps bias at zero so decoded actions depend solely on encoder
+    decoder_use_mlp=False,  # Linear decoder keeps hardware mapping transparent
+    decoder_mlp_hidden=32,
+    decoder_weight_l2_coef=0.0,
+    decoder_bias_l2_coef=0.0,
+    
+    # Ray-cast features tuned for corridor geometry
+    wall_ray_count=12,
+    wall_ray_max_range=64,
+    wall_depth_max_distance=18.0,
+    
+    # Encoder configuration
+    encoder_trainable=True,
+    encoder_entropy_coef=-0.10,  # Encourages confident (low-variance) stimulation
+    encoder_use_cnn=True,
+    encoder_cnn_channels=16,
+    encoder_cnn_downsample=4,
+    
+    # Ablation testing
+    decoder_ablation_mode='none',  # Swap to 'random' or 'zero' to test robustness
+    
+    # Episode feedback
+    episode_positive_feedback_event=None,  # Default to global reward feedback
+    episode_negative_feedback_event=None,
+    
+    # Distance normalization for corridor geometry
+    enemy_distance_normalization=1312.0  # Leave untouched unless you change WAD geometry
+)
+```
+
+### PPO Hyperparameters
+
+**From README.md lines 19-20:**
+
+```python
+config = PPOConfig(
+    learning_rate=3e-4,
+    gamma=0.99,
+    gae_lambda=0.95,  # High gamma/lambda needed for long-range dependencies
+    clip_epsilon=0.2,
+    entropy_coef=0.02,
+    steps_per_update=2048,  # Higher for stability (slow without parallelization)
+    batch_size=256,
+    num_epochs=4
+)
+```
+
+<Tip>
+Many RL implementations use far lower gamma (0.95) and lambda (0.90) for GAE, but this can severely affect training on lower levels due to long-range dependencies, since you take less damage and therefore live longer.
+</Tip>
+
+## Training Progression
+
+### Stage 1: Basic Movement (Level 1)
+
+```python
+config = PPOConfig(
+    doom_config="deadly_corridor_1.cfg",
+    learning_rate=3e-4,
+    max_episodes=500
+)
+```
+
+**Train until:**
+- Agent consistently moves forward
+- Picks up armor/health
+- Survival time > 30 seconds
+
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --max-episodes 500
+```
+
+### Stage 2: Targeting (Levels 2-3)
+
+```python
+config = PPOConfig(
+    doom_config="deadly_corridor_2.cfg",
+    learning_rate=3e-4,
+    max_episodes=1000
+)
+```
+
+**Train until:**
+- Agent turns toward enemies
+- Kill count increasing
+- Dodges incoming fire
+
+Load checkpoint from Stage 1:
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --checkpoint checkpoints/l5_2048_rand/episode_500.pt \
+    --max-episodes 1500
+```
+
+### Stage 3: Tactics (Level 4)
+
+```python
+config = PPOConfig(
+    doom_config="deadly_corridor_4.cfg",
+    learning_rate=3e-4,
+    max_episodes=2000
+)
+```
+
+**Train until:**
+- Strategic positioning
+- Ammo conservation
+- Multi-enemy engagement
+
+### Stage 4: Fine-Tuning (Level 5)
+
+<Warning>
+Level 5 is a significant difficulty spike. Use a **lower learning rate** to adapt existing policies without catastrophic forgetting.
+</Warning>
+
+```python
+config = PPOConfig(
+    doom_config="deadly_corridor_5.cfg",
+    learning_rate=1e-4,  # Reduced from 3e-4
+    max_episodes=3000
+)
+```
+
+**From README.md line 54:**
+> Consider fine-tuning on `deadly_corridor_5.cfg` with a lower learning rate to adapt movement behavior.
+
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --checkpoint checkpoints/l5_2048_rand/episode_2000.pt \
+    --max-episodes 5000
+```
+
+## Monitoring Curriculum Progress
+
+### TensorBoard Metrics
+
+```bash
+tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+```
+
+Key metrics per curriculum stage:
+
+| Metric | Level 1 Target | Level 2-3 Target | Level 4 Target | Level 5 Target |
+|--------|---------------|------------------|----------------|----------------|
+| **Episode Reward** | > 100 | > 300 | > 500 | > 800 |
+| **Kill Count** | 1-2 | 3-5 | 5-8 | 8+ |
+| **Survival Time** | 30s | 45s | 60s | 90s+ |
+| **Ammo Waste** | High | Medium | Low | Minimal |
+
+### Transition Criteria
+
+Move to the next level when:
+
+1. **Reward plateau**: No improvement for 100 episodes
+2. **Consistency**: 80% of episodes achieve target metrics
+3. **Skill demonstration**: Agent exhibits desired behaviors (recorded gameplay)
+
+## Checkpoint Management
+
+### Saving Checkpoints
+
+Checkpoints are automatically saved every 100 episodes (configurable):
+
+```python
+config = PPOConfig(
+    checkpoint_dir="checkpoints/l5_2048_rand",
+    save_interval=100  # episodes
+)
+```
+
+From USAGE.md line 55-61:
+```bash
+# Working checkpoint directory
+checkpoints/l5_2048_rand
+
+# To save/load checkpoints, make a copy of this directory
+cp -r checkpoints/l5_2048_rand checkpoints/level2_backup
+```
+
+### Loading Between Stages
+
+```bash
+# Stage 1 → Stage 2
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --checkpoint checkpoints/l5_2048_rand/episode_500.pt
+
+# Update doom_config in code to deadly_corridor_2.cfg
+```
+
+## Common Curriculum Issues
+
+<Accordion title="Agent learns bad habits on early levels">
+Symptom: Works well on level 1-3, fails catastrophically on level 5.
+
+Causes:
+- Over-optimization on easy levels (e.g., always running straight)
+- Insufficient exploration on harder levels
+
+Solutions:
+- Reduce `steps_per_update` on level 5 for more frequent updates
+- Increase `entropy_coef` temporarily to encourage exploration
+- Lower learning rate to prevent catastrophic forgetting
+
+```python
+config = PPOConfig(
+    doom_config="deadly_corridor_5.cfg",
+    learning_rate=1e-4,  # Lower
+    entropy_coef=0.04,   # Higher
+    steps_per_update=1024  # More frequent updates
+)
+```
+</Accordion>
+
+<Accordion title="No learning on level 1">
+Symptom: Reward stays flat even on easiest level.
+
+Causes:
+- Neurons not responding to stimulation
+- Feedback channels misconfigured
+- Ablation mode accidentally enabled
+
+Solutions:
+- Check `decoder_ablation_mode='none'`
+- Verify spike counts > 0 (TensorBoard: `Spikes/total_count`)
+- Inspect feedback amplitude/frequency in logs
+- Test with `--show_window` to observe behavior
+</Accordion>
+
+<Accordion title="Training unstable when transitioning levels">
+Symptom: Large reward variance when loading checkpoint on new level.
+
+Causes:
+- Learning rate too high for new scenario
+- Value network hasn't adapted to new reward distribution
+
+Solutions:
+- Always reduce learning rate 2-3x when changing levels
+- Use `normalize_returns=True` for value stability
+- Run 50-100 episodes on new level before judging performance
+
+```python
+config = PPOConfig(
+    learning_rate=1e-4,  # 3x lower than 3e-4
+    normalize_returns=True,
+    max_grad_norm=1.0  # Reduce from 3.0 for stability
+)
+```
+</Accordion>
+
+## Action Space Considerations
+
+### Hybrid vs. Discrete Actions
+
+From README.md line 21:
+> Hybrid action spaces are used (and greatly preferred) unless `use_discrete_action_set=True`. Realistically, you only flip this if all else fails to reduce entropy as it greatly reduces the movement fidelity of the agent and just doesn't look as cool.
+
+```python
+# Preferred (hybrid)
+config = PPOConfig(
+    use_discrete_action_set=False  # Default
+)
+
+# Fallback (simplified)
+config = PPOConfig(
+    use_discrete_action_set=True  # Only if hybrid fails
+)
+```
+
+## Visualizing Training
+
+From USAGE.md lines 35-39:
+
+```html
+<!-- visualisation.html -->
+<img id="img" width="640" src="http://127.0.0.1:12349/doom.mjpeg">
+```
+
+Run with visualization:
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --show_window
+```
+
+Open `visualisation.html` in a browser and update the IP to your training server.

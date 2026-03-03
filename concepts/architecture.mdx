@@ -1,0 +1,373 @@
+---
+title: System Architecture
+description: Distributed architecture for training biological neurons to play DOOM using PPO reinforcement learning
+---
+
+## Overview
+
+The DOOM Neuron project uses a distributed architecture that separates the training system (running DOOM and PyTorch models) from the CL1 biological neural hardware. This separation allows computationally intensive game rendering and model training to run on a powerful training server while the delicate neural interface operates on dedicated CL1 hardware.
+
+## Architecture Components
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      TRAINING SYSTEM                            │
+│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐  │
+│  │   VizDoom    │─────▶│  PPOPolicy   │─────▶│   Encoder    │  │
+│  │   Game Loop  │      │   Network    │      │   Network    │  │
+│  └──────────────┘      └──────────────┘      └──────────────┘  │
+│         │                      ▲                      │         │
+│         │ observations         │ actions              │ stim    │
+│         ▼                      │                      ▼         │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              UDP Protocol (udp_protocol.py)              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              │ │ │
+                              │ │ │  Network (Ethernet/WiFi)
+                              ▼ ▼ ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        CL1 DEVICE                               │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │       CL1NeuralInterface (cl1_neural_interface.py)       │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│         │                              ▲                        │
+│         │ stimulation                  │ spike data             │
+│         ▼                              │                        │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │          Biological Neurons (CL SDK: cl.Neurons)         │  │
+│  │                      64 Channels                          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Training System
+
+### VizDoom Environment (`training_server.py:1043-1380`)
+
+The `VizDoomEnv` class wraps the VizDoom game engine and provides:
+
+- **Game state extraction**: Processes game variables (health, ammo, position, velocity)
+- **Enemy tracking**: Tracks up to 5 enemies with position, velocity, and facing direction
+- **Visual observation**: Optional CNN input with configurable downsampling
+- **Reward shaping**: Computes rewards for kills, damage taken, armor pickup, etc.
+
+```python
+class VizDoomEnv:
+    def __init__(self, config: PPOConfig, render: bool = False):
+        self.game = DoomGame()
+        self.game.load_config(config.doom_config)
+        # Configure screen buffer, depth buffer, labels, etc.
+```
+
+### PPO Policy Network (`training_server.py:721-1037`)
+
+The `PPOPolicy` class implements the complete encoder-decoder architecture:
+
+<Accordion title="PPOPolicy Components">
+
+**Encoder Network** (`EncoderNetwork`)
+- Converts game observations to stimulation parameters (frequency and amplitude)
+- Optional CNN for visual processing (64 base channels by default)
+- Trainable Beta distributions for frequency/amplitude sampling
+- Outputs for 8 channel sets (encoding, movement, turning, attack)
+
+**Decoder Network** (`DecoderNetwork`)
+- Converts spike counts to action logits
+- Linear readout heads with optional non-negative weight constraints
+- Single joint action head for combinatorial action space (54 discrete actions)
+- Minimal parameters to ensure biological neurons control behavior
+
+**Value Network** (`ValueNetwork`)
+- Estimates state value for PPO critic
+- 2-layer MLP with SiLU activations
+- Hidden size: 128 units (configurable)
+
+</Accordion>
+
+### Channel Organization
+
+The system uses **8 channel groups** (59 total channels from 64 available):
+
+```python
+# From PPOConfig and CL1Config
+encoding_channels      = [8, 9, 10, 17, 18, 25, 27, 28]       # 8 channels
+move_forward_channels  = [41, 42, 49]                         # 3 channels
+move_backward_channels = [50, 51, 58]                         # 3 channels
+move_left_channels     = [13, 14, 21]                         # 3 channels
+move_right_channels    = [45, 46, 53]                         # 3 channels
+turn_left_channels     = [29, 30, 31, 37]                     # 4 channels
+turn_right_channels    = [59, 60, 61, 62]                     # 4 channels
+attack_channels        = [32, 33, 34]                         # 3 channels
+
+# Reserved/forbidden channels
+forbidden_channels = {0, 4, 7, 56, 63}  # Hardware reserved
+```
+
+<Note>
+Channels 0, 4, 7, 56, and 63 are reserved by the CL1 hardware and cannot be used for stimulation.
+</Note>
+
+## CL1 Neural Interface
+
+### Hardware Loop (`cl1_neural_interface.py:292-499`)
+
+The CL1 device runs a tight loop at configurable frequency (default 10 Hz):
+
+```python
+for tick in neurons.loop(ticks_per_second=self.tick_frequency_hz):
+    # 1. Receive stimulation command (non-blocking UDP)
+    packet, addr = self.stim_socket.recvfrom(STIM_PACKET_SIZE)
+    timestamp, frequencies, amplitudes = unpack_stimulation_command(packet)
+    
+    # 2. Apply stimulation to neural hardware
+    self.apply_stimulation(neurons, frequencies, amplitudes)
+    
+    # 3. Collect spike responses
+    spike_counts = self.collect_spikes(tick)
+    
+    # 4. Send spikes back to training system
+    spike_packet = pack_spike_data(spike_counts)
+    self.spike_socket.sendto(spike_packet, (training_host, spike_port))
+```
+
+### Stimulation Application (`cl1_neural_interface.py:173-218`)
+
+Stimulation uses the CL SDK to create biphasic pulses:
+
+```python
+def apply_stimulation(self, neurons, frequencies, amplitudes):
+    # Interrupt ongoing stimulation
+    neurons.interrupt(self.config.all_channels_set)
+    
+    # Apply to each encoding channel
+    for i, channel_num in enumerate(self.config.encoding_channels):
+        stim_design = cl.StimDesign(
+            phase1_duration=120,  # μs
+            phase1_amplitude=-amplitudes[i],  # Negative phase
+            phase2_duration=120,  # μs  
+            phase2_amplitude=amplitudes[i]    # Positive phase
+        )
+        burst_design = cl.BurstDesign(
+            burst_count=1,
+            frequency=int(frequencies[i])
+        )
+        neurons.stim(channel_set, stim_design, burst_design)
+```
+
+<Info>
+The CL1 device caches stimulation designs using an LRU cache (maxsize=2048) to avoid recreating identical StimDesign objects, improving performance.
+</Info>
+
+### Spike Collection (`cl1_neural_interface.py:219-236`)
+
+Spikes are counted per channel group:
+
+```python
+def collect_spikes(self, tick) -> np.ndarray:
+    spike_counts = np.zeros(8, dtype=np.float32)  # 8 channel groups
+    for spike in tick.analysis.spikes:
+        idx = self.channel_lookup.get(spike.channel)
+        if idx is not None:
+            spike_counts[idx] += 1
+    return spike_counts
+```
+
+## UDP Communication Protocol
+
+### Packet Formats (`udp_protocol.py`)
+
+<Accordion title="Binary Packet Specifications">
+
+**Stimulation Command** (Training → CL1): 72 bytes
+```
+[8 bytes timestamp (μs)]
+[32 bytes frequencies (8 × float32)]
+[32 bytes amplitudes (8 × float32)]
+```
+
+**Spike Data** (CL1 → Training): 40 bytes
+```
+[8 bytes timestamp (μs)]
+[32 bytes spike_counts (8 × float32)]
+```
+
+**Event Metadata** (Training → CL1): Variable size
+```
+[8 bytes timestamp (μs)]
+[4 bytes JSON length]
+[JSON payload with event_type and data]
+```
+
+**Feedback Command** (Training → CL1): 120 bytes
+```
+[8 bytes timestamp]
+[1 byte type (interrupt/event/reward)]
+[1 byte num_channels]
+[64 bytes channel array]
+[4 bytes frequency]
+[4 bytes amplitude]
+[4 bytes pulses]
+[1 byte unpredictable flag]
+[32 bytes event_name]
+[1 byte padding]
+```
+
+</Accordion>
+
+### Port Configuration (Default)
+
+```python
+cl1_stim_port     = 12345  # Training → CL1: Stimulation commands
+cl1_spike_port    = 12346  # CL1 → Training: Spike data
+cl1_event_port    = 12347  # Training → CL1: Event metadata  
+cl1_feedback_port = 12348  # Training → CL1: Feedback stimulation
+vis_port          = 12349  # MJPEG video stream
+```
+
+<Tip>
+The UDP protocol includes microsecond timestamps for latency measurement. Use `udp_protocol.get_latency_ms(timestamp)` to monitor network delays.
+</Tip>
+
+## Data Flow
+
+### Forward Pass (Observation → Action)
+
+1. **VizDoom** generates game state and screen buffer
+2. **Encoder** (`EncoderNetwork.sample()`) converts observation to stimulation parameters:
+   - Frequencies: 4-40 Hz range
+   - Amplitudes: 1.0-2.5 μA range
+3. **UDP** sends stimulation command to CL1 device
+4. **CL1** applies biphasic stimulation to biological neurons
+5. **Neurons** respond with spike patterns
+6. **CL1** counts spikes per channel group and sends via UDP
+7. **Decoder** (`DecoderNetwork.forward()`) converts spike counts to action logits
+8. **Action sampling** produces discrete actions (forward/strafe/turn/attack)
+9. **VizDoom** executes action and produces next observation
+
+### Training Loop
+
+The training system collects experience rollouts and performs PPO updates:
+
+```python
+# From training_server.py
+for episode in range(max_episodes):
+    # Collect rollout (2048 steps by default)
+    for step in range(steps_per_update):
+        obs = env.get_observation()
+        frequencies, amplitudes = policy.sample_encoder(obs)
+        policy.apply_stimulation(stim_socket, frequencies, amplitudes)
+        spike_counts = policy.collect_spikes(spike_socket)
+        actions = policy.decode_spikes_to_action(spike_counts)
+        reward, done = env.step(actions)
+        
+    # PPO update (4 epochs, batch_size=256)
+    for epoch in range(num_epochs):
+        advantages, returns = compute_gae(rewards, values)
+        policy_loss, value_loss = compute_ppo_loss()
+        optimizer.step()
+```
+
+## Visualization
+
+### MJPEG Streaming (`mjpeg_server.py`)
+
+The `MJPEGServer` provides real-time visualization of the game:
+
+```python
+mjpeg_server = MJPEGServer(
+    path="/doom.mjpeg",
+    host="0.0.0.0",
+    port=12349
+)
+
+# Update frame during training
+mjpeg_server.update(screen_buffer)  # RGB numpy array
+```
+
+- Runs in separate process using multiprocessing
+- Pre-encodes JPEG once to minimize CPU usage
+- Threaded HTTP server supports multiple clients
+- Access via `http://training-host:12349/doom.mjpeg`
+
+## Configuration
+
+### Key Architecture Parameters
+
+```python
+# From PPOConfig
+hidden_size = 128                    # Network hidden layer size
+encoder_cnn_channels = 64           # CNN base channels for visual processing
+encoder_trainable = True            # Learn encoder via policy gradients
+decoder_zero_bias = True            # Force decoder to rely on neural activity
+decoder_enforce_nonnegative = False # Allow negative decoder weights
+
+# Stimulation parameters
+phase1_duration = 160.0  # μs (negative phase)
+phase2_duration = 160.0  # μs (positive phase)
+min_frequency = 4.0      # Hz
+max_frequency = 40.0     # Hz
+min_amplitude = 1.0      # μA
+max_amplitude = 2.5      # μA
+burst_count = 500        # Pulses per burst
+
+# Training loop
+num_envs = 1
+steps_per_update = 2048
+batch_size = 256
+num_epochs = 4
+```
+
+## Performance Considerations
+
+<Accordion title="Optimization Strategies">
+
+**Stimulation Caching**
+- LRU cache (2048 entries) for `cl.StimDesign` and `cl.BurstDesign` objects
+- Cache key: `(channel_index, frequency, rounded_amplitude)`
+- Avoids repeated object creation in tight loop
+
+**Non-blocking UDP**
+- CL1 sockets set to non-blocking mode to prevent stalling
+- Training system uses socket timeouts for graceful fallback
+- Missing packets default to zero stimulation/spikes
+
+**Binary Packet Format**
+- Fixed-size packets (40-120 bytes) minimize parsing overhead
+- Little-endian byte order for x86/ARM compatibility
+- Float32 precision sufficient for neural stimulation
+
+**Neural Loop Frequency**
+- Default: 10 Hz (100ms per tick)
+- Configurable via `--tick-frequency` flag
+- Higher frequencies improve temporal resolution but increase network traffic
+
+</Accordion>
+
+## Recording and Logging
+
+The CL1 interface automatically records neural data:
+
+```python
+recording = neurons.record(
+    file_suffix=f"cl1_interface_{tick_frequency_hz}_hz",
+    file_location="/data/recordings/doom-neuron",
+    attributes={"tick_frequency": tick_frequency_hz}
+)
+```
+
+Event metadata is logged via `DataStream`:
+
+```python
+event_datastream = neurons.create_data_stream(
+    name="cl1_neural_interface",
+    attributes={"used_channels": used_channels}
+)
+
+# Log episode completion
+event_datastream.append(tick.timestamp, {
+    "episode": episode_num,
+    "reward": total_reward,
+    "kills": kill_count
+})
+```

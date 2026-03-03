@@ -1,0 +1,523 @@
+---
+title: Neural Interface
+description: How the CL1 biological neural hardware receives stimulation and generates spike responses for DOOM gameplay
+---
+
+## Overview
+
+The CL1 neural interface provides the bridge between digital game states and biological neural activity. The system uses electrical stimulation to encode game observations into neural activity, then reads out spike patterns to decode movement commands.
+
+## CL1 Hardware Architecture
+
+### Biological Neurons
+
+The CL1 device contains **living biological neurons** cultured on a multi-electrode array (MEA):
+
+- **64 electrode channels** for simultaneous recording and stimulation
+- **59 usable channels** (5 reserved by hardware: 0, 4, 7, 56, 63)
+- **Bidirectional interface**: Both stimulate and record from same neurons
+- **Real-time operation**: Stimulation and recording occur simultaneously
+
+```
+┌─────────────────────────────────────────────────┐
+│            CL1 Multi-Electrode Array            │
+│                                                 │
+│  Channel 0  ────── Reserved (Hardware)          │
+│  Channel 1  ━━━━━━ Available                    │
+│  Channel 2  ━━━━━━ Available                    │
+│  Channel 3  ━━━━━━ Available                    │
+│  Channel 4  ────── Reserved (Hardware)          │
+│  ...                                            │
+│  Channel 8  ━━━━━━ Encoding (Game State)        │
+│  Channel 9  ━━━━━━ Encoding (Game State)        │
+│  ...                                            │
+│  Channel 32 ━━━━━━ Attack Action                │
+│  Channel 33 ━━━━━━ Attack Action                │
+│  ...                                            │
+│  Channel 56 ────── Reserved (Hardware)          │
+│  ...                                            │
+│  Channel 63 ────── Reserved (Hardware)          │
+└─────────────────────────────────────────────────┘
+```
+
+## Channel Organization
+
+### Functional Groups
+
+Channels are organized into **8 functional groups** for different purposes:
+
+```python
+# From CL1Config and PPOConfig
+
+# Encoding channels: Receive game state stimulation
+encoding_channels = [8, 9, 10, 17, 18, 25, 27, 28]  # 8 channels
+
+# Movement action channels: Spike counts decoded to movement
+move_forward_channels  = [41, 42, 49]     # 3 channels
+move_backward_channels = [50, 51, 58]     # 3 channels
+move_left_channels     = [13, 14, 21]     # 3 channels
+move_right_channels    = [45, 46, 53]     # 3 channels
+
+# Turning action channels
+turn_left_channels  = [29, 30, 31, 37]    # 4 channels
+turn_right_channels = [59, 60, 61, 62]    # 4 channels
+
+# Attack action channels
+attack_channels = [32, 33, 34]            # 3 channels
+```
+
+<Info>
+Each functional group contains multiple channels to provide redundancy and richer neural representations. The encoder learns which channels to stimulate for different game states.
+</Info>
+
+### Reserved Channels
+
+```python
+forbidden_channels = {0, 4, 7, 56, 63}
+```
+
+These channels are reserved by the CL1 hardware for:
+- Internal calibration and reference signals
+- Hardware diagnostics
+- Quality control measurements
+
+<Note>
+Attempting to stimulate reserved channels will raise a `ValueError` during configuration initialization. The system validates channel assignments in `PPOConfig.__post_init__()`.
+</Note>
+
+## Stimulation Protocol
+
+### Biphasic Pulse Design
+
+The CL1 interface uses **charge-balanced biphasic pulses** to safely stimulate neurons:
+
+```python
+# From cl1_neural_interface.py:204-210
+stim_design = cl.StimDesign(
+    phase1_duration=120,          # μs (microseconds)
+    phase1_amplitude=-amplitude,  # μA (microamperes, negative)
+    phase2_duration=120,          # μs
+    phase2_amplitude=amplitude    # μA (positive)
+)
+```
+
+**Why Biphasic?**
+
+1. **Charge balance**: Equal positive and negative charge prevents electrode degradation
+2. **Neural safety**: Avoids DC current that could damage neurons
+3. **Prevents polarization**: Maintains stable electrode-electrolyte interface
+
+```
+Voltage
+  ^
+  │     ┌────────┐
+  │     │        │
+  0─────┘        └────────
+  │                  ┌────
+  │                  │
+  v                  └────
+  
+       Phase 1      Phase 2
+      (120 μs)      (120 μs)
+      (-amp μA)     (+amp μA)
+```
+
+### Burst Stimulation
+
+Stimulation is delivered in bursts at specified frequencies:
+
+```python
+# From cl1_neural_interface.py:209
+burst_design = cl.BurstDesign(
+    burst_count=1,              # Number of bursts
+    frequency=int(frequency)    # Hz (4-40 Hz range)
+)
+```
+
+**Burst Parameters**:
+- **Frequency range**: 4-40 Hz
+  - Low frequencies (4-10 Hz): Sparse, discrete stimulation
+  - High frequencies (30-40 Hz): Dense, sustained stimulation
+- **Burst count**: 1 pulse per tick (CL1 device operates at 10 Hz)
+- **Inter-pulse interval**: Determined by frequency (25-250 ms)
+
+<Tip>
+The encoder learns to map different game states to different frequency/amplitude combinations. For example, seeing an enemy might trigger 35 Hz at 2.3 μA, while being alone might produce 8 Hz at 1.2 μA.
+</Tip>
+
+### Stimulation Application
+
+The CL1 device applies stimulation in a tight loop:
+
+```python
+# From cl1_neural_interface.py:173-218
+def apply_stimulation(self, neurons, frequencies, amplitudes):
+    """Apply stimulation based on encoder output."""
+    
+    # 1. Interrupt any ongoing stimulation
+    neurons.interrupt(self.config.all_channels_set)
+    
+    # 2. Apply to each encoding channel
+    for i, channel_num in enumerate(self.config.encoding_channels):
+        channel_set = cl.ChannelSet(channel_num)
+        
+        # Get parameters for this channel
+        amplitude = float(amplitudes[i])  # μA
+        frequency = int(frequencies[i])    # Hz
+        
+        # Create or retrieve cached stimulation design
+        cache_key = (i, frequency, round(amplitude, 4))
+        stim_design, burst_design = self._stim_cache.get_or_set(
+            cache_key,
+            lambda: create_stim_design(amplitude, frequency)
+        )
+        
+        # 3. Apply stimulation
+        neurons.stim(channel_set, stim_design, burst_design)
+    
+    self.stim_commands_applied += 1
+```
+
+**Key Design Decisions**:
+
+1. **Interrupt before stimulation**: Ensures clean state, prevents overlapping bursts
+2. **Per-channel stimulation**: Each encoding channel gets unique frequency/amplitude
+3. **Caching**: Avoids recreating identical `StimDesign` objects (LRU cache, 2048 entries)
+
+## Spike Collection
+
+### Real-Time Spike Detection
+
+The CL SDK continuously monitors all channels for action potentials:
+
+```python
+# From cl1_neural_interface.py:219-236
+def collect_spikes(self, tick) -> np.ndarray:
+    """Count spikes per channel group during this tick."""
+    
+    spike_counts = np.zeros(8, dtype=np.float32)  # 8 channel groups
+    
+    for spike in tick.analysis.spikes:
+        # Find which functional group this channel belongs to
+        idx = self.channel_lookup.get(spike.channel)
+        if idx is not None:
+            spike_counts[idx] += 1
+            self.total_spikes += 1
+    
+    return spike_counts
+```
+
+**Spike Aggregation**:
+- Spikes are counted **per functional group**, not per channel
+- Example: If channels 8, 9, 10 (encoding group) each fire once, `spike_counts[0] = 3`
+- This pooling provides a more robust signal than individual channels
+
+### Channel Lookup Table
+
+```python
+# From cl1_neural_interface.py:128-132
+self.channel_lookup: Dict[int, int] = {}
+for idx, (_, channel_list, _) in enumerate(self.channel_groups):
+    for ch in channel_list:
+        self.channel_lookup[ch] = idx
+
+# Example lookup:
+# channel_lookup[8] = 0   # Encoding group
+# channel_lookup[9] = 0   # Encoding group
+# channel_lookup[41] = 1  # Move forward group
+# channel_lookup[32] = 7  # Attack group
+```
+
+## Hardware Loop
+
+### Main Loop Operation
+
+The CL1 device runs a continuous loop synchronized to hardware tick rate:
+
+```python
+# From cl1_neural_interface.py:349-397
+for tick in neurons.loop(ticks_per_second=self.tick_frequency_hz):
+    # 1. Receive stimulation command (non-blocking UDP)
+    try:
+        packet, addr = self.stim_socket.recvfrom(STIM_PACKET_SIZE)
+        timestamp, frequencies, amplitudes = unpack_stimulation_command(packet)
+    except BlockingIOError:
+        # No packet available - use default (zeros)
+        frequencies = np.zeros(8, dtype=np.float32)
+        amplitudes = np.zeros(8, dtype=np.float32)
+    
+    # 2. Apply stimulation to neurons
+    self.apply_stimulation(neurons, frequencies, amplitudes)
+    
+    # 3. Collect spike responses from this tick
+    spike_counts = self.collect_spikes(tick)
+    
+    # 4. Send spike data back to training system
+    spike_packet = pack_spike_data(spike_counts)
+    self.spike_socket.sendto(spike_packet, (training_host, spike_port))
+```
+
+**Timing**:
+- Default: **10 Hz** (100 ms per tick)
+- Configurable via `--tick-frequency` flag
+- Higher frequencies = better temporal resolution, more network traffic
+
+<Accordion title="Why 10 Hz?">
+
+The 10 Hz tick rate balances several factors:
+
+1. **Neural time constants**: Biological neurons typically respond on ~10-100 ms timescales
+2. **Game timestep**: VizDoom updates at 35 Hz, but movement commands are valid for multiple frames
+3. **Network latency**: UDP packets take ~1-5 ms on local network; 100 ms tick allows headroom
+4. **Stimulation duration**: Burst stimulation needs time to evoke responses before next command
+
+Faster rates (e.g., 100 Hz) could be used but provide diminishing returns given neural response times.
+
+</Accordion>
+
+### Non-Blocking UDP
+
+The CL1 interface uses **non-blocking sockets** to prevent hardware loop stalls:
+
+```python
+# From cl1_neural_interface.py:149-150
+self.stim_socket.setblocking(False)
+self.event_socket.setblocking(False)
+self.feedback_socket.setblocking(False)
+```
+
+**Benefits**:
+1. Hardware loop never blocks waiting for packets
+2. Missing packets default to zero stimulation (safe fallback)
+3. Prevents network issues from disrupting neural recording
+
+## CL SDK Integration
+
+### Opening Connection
+
+```python
+# From cl1_neural_interface.py:304
+with cl.open() as neurons:
+    # neurons is a cl.Neurons object providing hardware access
+    for tick in neurons.loop(ticks_per_second=10):
+        # ... stimulate and record ...
+```
+
+The `cl.open()` context manager:
+- Establishes connection to CL1 hardware
+- Initializes electrode array
+- Provides `neurons` interface for stimulation and recording
+- Ensures cleanup on exit
+
+### Recording Neural Data
+
+```python
+# From cl1_neural_interface.py:331-339
+recording = neurons.record(
+    file_suffix=f"cl1_interface_{tick_frequency_hz}_hz",
+    file_location="/data/recordings/doom-neuron",
+    attributes={"tick_frequency": tick_frequency_hz}
+)
+```
+
+Recordings capture:
+- **Spike times**: Precise timestamps for each action potential
+- **Channel IDs**: Which electrode detected each spike
+- **Stimulation events**: When and how neurons were stimulated
+- **Metadata**: Experimental parameters, timestamps, attributes
+
+### Data Streams for Events
+
+```python
+# From cl1_neural_interface.py:323-326
+event_datastream = neurons.create_data_stream(
+    name="cl1_neural_interface",
+    attributes={"used_channels": used_channels}
+)
+
+# Log episode completion
+event_datastream.append(tick.timestamp, {
+    "episode": episode_num,
+    "reward": total_reward,
+    "kills": kill_count
+})
+```
+
+Data streams provide synchronized event logging:
+- Timestamped episode metadata
+- Reward signals for offline analysis
+- Training progress markers
+
+## Stimulation Design Caching
+
+### LRU Cache Implementation
+
+```python
+# From cl1_neural_interface.py:26-44
+class LRUCache(OrderedDict):
+    def __init__(self, maxsize=2048):
+        super().__init__()
+        self.maxsize = maxsize
+    
+    def get_or_set(self, key, factory):
+        if key in self:
+            value = self[key]
+            self.move_to_end(key)  # Update access order
+            return value
+        
+        value = factory()  # Create new object
+        self[key] = value
+        
+        if len(self) > self.maxsize:
+            self.popitem(last=False)  # Remove least recently used
+        
+        return value
+```
+
+**Why Cache?**
+
+Creating `cl.StimDesign` and `cl.BurstDesign` objects has overhead:
+- Object allocation
+- Parameter validation
+- Internal CL SDK setup
+
+With 10 Hz stimulation and similar game states, many cache hits occur:
+```python
+cache_key = (channel_index, frequency, rounded_amplitude)
+# Example: (0, 35, 2.3) appears frequently when agent sees enemies
+```
+
+**Cache Size**: 2048 entries is sufficient because:
+- 8 channels × ~10 frequency values × ~15 amplitude values ≈ 1200 combinations
+- Rarely-used combinations naturally evict from LRU
+
+## Biological Considerations
+
+### Stimulation Safety
+
+<Note>
+Stimulation parameters are carefully bounded to ensure neuron health:
+
+- **Amplitude**: 1.0-2.5 μA (microamperes)
+  - Below: Insufficient to evoke spikes
+  - Above: Risk of over-stimulation and neuron damage
+  
+- **Frequency**: 4-40 Hz
+  - Below: Too sparse for meaningful encoding
+  - Above: Risk of depolarization block
+  
+- **Pulse duration**: 120 μs per phase
+  - Long enough to depolarize membrane
+  - Short enough to avoid electrochemical damage
+</Note>
+
+### Neural Response Characteristics
+
+**Spike Generation**:
+- Neurons fire when membrane potential exceeds threshold (~-55 mV)
+- Stimulation pulses inject current, causing depolarization
+- Response latency: ~2-10 ms after pulse onset
+- Refractory period: ~1-5 ms (limits max firing rate)
+
+**Adaptation**:
+- Repeated stimulation can cause spike rate adaptation
+- Synaptic plasticity may alter response patterns over training
+- Encoder must learn to compensate for neural adaptation
+
+**Noise**:
+- Spontaneous activity: Neurons fire even without stimulation (~0.1-5 Hz)
+- Response variability: Same stimulus can evoke different spike counts
+- Decoder must be robust to neural noise
+
+## Performance Monitoring
+
+### Statistics Logging
+
+```python
+# From cl1_neural_interface.py:464-481
+if time.time() - last_stats_time >= 10.0:
+    print(f"Stats: {tick_count} ticks | "
+          f"Recv: {recv_rate:.1f} pkt/s | "
+          f"Send: {send_rate:.1f} pkt/s | "
+          f"Events: {events_received} | "
+          f"Feedback: {feedback_commands_received} | "
+          f"Avg spikes: {avg_spikes:.2f}/tick")
+```
+
+**Key Metrics**:
+- **Packet rates**: Should match tick frequency (10 pkt/s for 10 Hz)
+- **Average spikes**: Typical range 5-50 spikes/tick depending on stimulation
+- **Events/feedback**: Confirms training system communication
+
+### Latency Measurement
+
+```python
+# From udp_protocol.py:169-181
+def get_latency_ms(packet_timestamp: int) -> float:
+    """Calculate network latency from packet timestamp."""
+    now = int(time.time() * 1_000_000)  # Current time in μs
+    latency_us = now - packet_timestamp
+    return latency_us / 1000.0  # Convert to ms
+
+# Log periodically
+if self.packets_received % 1000 == 0:
+    latency = get_latency_ms(timestamp)
+    print(f"Packet latency: {latency:.2f} ms")
+```
+
+Typical latencies:
+- **Local network**: 1-5 ms
+- **Same machine** (localhost): < 1 ms
+- **WiFi**: 5-20 ms
+
+<Tip>
+If latency exceeds 50 ms, investigate network congestion or CPU overload on either system. High latency can cause stimulation-spike timing mismatches.
+</Tip>
+
+## Troubleshooting
+
+### Common Issues
+
+<Accordion title="No Spikes Detected">
+
+**Possible causes**:
+1. Stimulation amplitude too low (< 1.0 μA)
+2. Neurons not healthy (check CL1 viability indicators)
+3. Reserved channels being used (check channel configuration)
+4. Electrode impedance too high (check CL SDK diagnostics)
+
+**Solutions**:
+- Increase `min_amplitude` in PPOConfig
+- Verify neuron culture health via CL SDK
+- Review channel assignments in `encoding_channels`
+- Run CL1 impedance test to check electrode quality
+
+</Accordion>
+
+<Accordion title="Too Many Spikes (Saturation)">
+
+**Possible causes**:
+1. Stimulation amplitude too high (> 3.0 μA)
+2. Frequency too high (> 50 Hz)
+3. Overlapping stimulation bursts
+
+**Solutions**:
+- Decrease `max_amplitude` in PPOConfig
+- Ensure `burst_count = 1` for 10 Hz loop
+- Verify `neurons.interrupt()` called before stimulation
+
+</Accordion>
+
+<Accordion title="Packet Loss">
+
+**Symptoms**:
+- Receive rate much less than tick frequency
+- Frequent "No packet available" warnings
+
+**Solutions**:
+- Check network connectivity (ping CL1 device)
+- Reduce tick frequency if CPU overloaded
+- Increase socket buffer size: `socket.setsockopt(SOL_SOCKET, SO_RCVBUF, 65536)`
+- Use wired Ethernet instead of WiFi
+
+</Accordion>

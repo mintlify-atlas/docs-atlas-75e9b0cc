@@ -1,80 +1,288 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get DOOM Neuron training running in minutes with real biological neurons
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+Get a DOOM Neuron training session running in under 10 minutes.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+This guide assumes you have CL1 hardware available. For SDK-based testing, use the convenience scripts in `scripts/run_sdk_*.sh`.
 </Note>
+
+## Prerequisites
+
+- Python 3.8+
+- CUDA-capable GPU (recommended) or CPU
+- CL1 hardware or CL SDK for testing
+- Network access between training server and CL1 device
+
+## Installation
+
+<Steps>
+  <Step title="Clone and Setup Environment">
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    ```
+    
+    <Tip>
+    Torch 2.10 with CUDA 13.0 was used in testing, but any version compatible with your hardware should work.
+    </Tip>
+  </Step>
+  
+  <Step title="Verify Installation">
+    Check that VizDoom and the CL SDK are properly installed:
+    ```bash
+    python3 -c "import vizdoom; import cl; print('All dependencies installed!')"
+    ```
+  </Step>
+</Steps>
+
+## Training Architecture
+
+DOOM Neuron uses a distributed architecture with two components:
+
+1. **CL1 Neural Interface** - Runs on the CL1 device, handles stimulation and spike recording
+2. **Training Server** - Runs the PPO training loop, manages the game environment
+
+## Quick Start: Local Training
+
+For local development on the same machine:
+
+<CodeGroup>
+```bash CL1 Interface (Terminal 1)
+python cl1_neural_interface.py --training-host localhost
+```
+
+```bash Training Server (Terminal 2)
+python training_server.py --mode train --device cuda --cl1-host localhost
+```
+</CodeGroup>
+
+<Warning>
+Start the CL1 interface first, then the training server. Both should launch around the same time.
+</Warning>
+
+## Quick Start: Remote Training
+
+For training with CL1 on a separate device:
+
+<CodeGroup>
+```bash CL1 Interface (on CL1 device at 192.168.1.50)
+python cl1_neural_interface.py --training-host 192.168.1.100
+```
+
+```bash Training Server (on training machine at 192.168.1.100)
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50
+```
+</CodeGroup>
+
+### Network Ports
+
+Ensure these UDP ports are open:
+- **12345** - Stimulation commands (training → CL1)
+- **12346** - Spike data (CL1 → training)
+- **12347** - Event metadata (training → CL1)
+- **12348** - Feedback commands (training → CL1)
+
+## Convenience Scripts
+
+The project includes convenience scripts for common workflows:
+
+<CodeGroup>
+```bash Hardware CL1
+# Run this on CL1 device
+./scripts/run_cl1.sh
+```
+
+```bash Hardware Training Server
+# Run this on training machine with CUDA
+./scripts/run_training_server.sh
+```
+
+```bash SDK CL1 (Testing)
+# Run this for local testing with SDK
+./scripts/run_sdk_cl1.sh
+```
+
+```bash SDK Training Server (Testing)
+# Run this for local testing with SDK
+./scripts/run_sdk_training_server.sh
+```
+</CodeGroup>
+
+<Tip>
+Check the IP addresses and tick frequency in the scripts before running!
+</Tip>
+
+## Monitoring Training
+
+<Steps>
+  <Step title="Watch TensorBoard">
+    Training metrics are logged to TensorBoard:
+    ```bash
+    tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+    ```
+    
+    Open `http://localhost:6006` in your browser to see:
+    - Episode rewards
+    - Loss curves (policy, value, encoder entropy)
+    - Action distributions
+    - Decoder weight/bias ratios
+  </Step>
+  
+  <Step title="Visual Feedback (Optional)">
+    For real-time game visualization, open `visualisation.html` in a browser and update the image source:
+    ```html
+    <img id="img" width="640" src="http://127.0.0.1:12349/doom.mjpeg">
+    ```
+  </Step>
+</Steps>
+
+## Understanding the Output
+
+### Training Server Output
+```
+Episode 1 | Reward: 150.0 | Length: 245 | Kills: 2
+Episode 2 | Reward: -50.0 | Length: 89 | Kills: 0
+Episode 3 | Reward: 320.5 | Length: 412 | Kills: 3
+```
+
+- **Reward**: Total episode reward (game rewards + custom shaping)
+- **Length**: Number of timesteps before episode ended
+- **Kills**: Enemy kills in the episode
+
+### Checkpoints
+
+Model checkpoints are saved every 100 episodes to:
+```
+checkpoints/l5_2048_rand/episode_*.pt
+```
+
+## First Training Session
+
+Let's run a simple training session:
+
+<Steps>
+  <Step title="Start CL1 Interface">
+    ```bash
+    python cl1_neural_interface.py \
+        --training-host localhost \
+        --tick-frequency 10
+    ```
+    
+    You should see:
+    ```
+    [CL1] Listening for stimulation on port 12345
+    [CL1] Sending spikes to port 12346
+    [CL1] Neural loop running at 10 Hz
+    ```
+  </Step>
+  
+  <Step title="Start Training Server">
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host localhost \
+        --max-episodes 1000
+    ```
+    
+    Training will begin immediately:
+    ```
+    [Training] Connected to CL1 at localhost
+    [Training] Scenario: progressive_deathmatch.cfg
+    [Training] Episode 1 starting...
+    ```
+  </Step>
+  
+  <Step title="Monitor Progress">
+    In another terminal, launch TensorBoard:
+    ```bash
+    tensorboard --logdir checkpoints/l5_2048_rand/logs
+    ```
+    
+    Watch the reward curve increase as the biological neurons learn!
+  </Step>
+</Steps>
+
+## Common Training Patterns
+
+### Resume from Checkpoint
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --checkpoint checkpoints/episode_500.pt
+```
+
+### Watch Trained Policy
+```bash
+python training_server.py \
+    --mode watch \
+    --device cuda \
+    --checkpoint checkpoints/final_model.pt
+```
+
+<Warning>
+Watch mode uses direct hardware access and has not been ported to UDP yet.
+</Warning>
+
+### Show Game Window (Debug)
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host localhost \
+    --show_window
+```
+
+### Custom Recording Path
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --recording_path /data/doom_recordings
+```
+
+## Stopping Training
+
+Press `Ctrl+C` in either terminal to gracefully shutdown:
+- Training server sends completion signal
+- CL1 interface saves recording and exits
+- Both processes cleanup sockets
+
+## Output Files
+
+### Training Server
+- `checkpoints/episode_*.pt` - Model checkpoints
+- `checkpoints/l5_2048_rand/logs/` - TensorBoard logs
+- `training_log.jsonl` - Episode statistics
+
+### CL1 Interface
+- `<recording_path>/*.cl1` - Neural recordings with metadata
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="sliders" href="/configuration/ppo-config">
+    Tune PPO hyperparameters and feedback settings
+  </Card>
+  <Card title="Scenarios" icon="map" href="/guides/scenarios">
+    Explore different DOOM scenarios and curriculum learning
+  </Card>
+  <Card title="Architecture" icon="brain" href="/concepts/architecture">
+    Deep dive into the encoder-decoder pipeline
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/advanced/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

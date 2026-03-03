@@ -1,0 +1,323 @@
+---
+title: "Remote Training"
+description: "Setting up DOOM Neuron for remote training with CL1 hardware on a separate device"
+---
+
+## Overview
+
+Remote training runs the CL1 neural interface on dedicated CL1 hardware while the training server runs on a separate machine with CUDA capabilities. This is the production setup for training biological neurons to play DOOM.
+
+<Warning>
+  **Critical:** Start the CL1 interface **before** the training server. Both should be started around the same time, but CL1 first.
+</Warning>
+
+## Network Setup
+
+You need two machines on the same network:
+
+1. **CL1 Device** - Runs the neural interface (e.g., `192.168.240.84`)
+2. **Training Machine** - Runs VizDoom and PPO training (e.g., `192.168.1.238`)
+
+### Required Ports
+
+Ensure these UDP ports are open between the machines:
+
+- **12345** - Stimulation commands (training → CL1)
+- **12346** - Spike data (CL1 → training)
+- **12347** - Event metadata (training → CL1)
+- **12348** - Feedback commands (training → CL1)
+
+<Tip>
+  Test connectivity with `ping` before starting training. Both machines must be able to reach each other.
+</Tip>
+
+## Quick Start
+
+<Steps>
+  <Step title="Configure IP Addresses">
+    Before running the scripts, verify the IP addresses:
+
+    **On CL1 device**, check `scripts/run_cl1.sh`:
+    ```bash
+    # training-host should point to your training machine
+    # Example: 192.168.1.238 is "geodude"
+    --training-host 192.168.1.238
+    ```
+
+    **On training machine**, check `scripts/run_training_server.sh`:
+    ```bash
+    # cl1-host should point to your CL1 device
+    # Example: 192.168.240.84 is "cl1-2507-15"
+    --cl1-host 192.168.240.84
+    ```
+  </Step>
+
+  <Step title="Start CL1 Interface First">
+    On the **CL1 device**, run:
+
+    ```bash
+    ./scripts/run_cl1.sh
+    ```
+
+    This executes:
+    ```bash
+    python cl1_neural_interface.py \
+        --training-host 192.168.1.238 \
+        --recording-path /data/recordings/doom-neuron/ \
+        --tick-frequency 10
+    ```
+
+    **What this does:**
+    - Connects to training server at `192.168.1.238`
+    - Saves recordings to `/data/recordings/doom-neuron/`
+    - Runs neural loop at 10 Hz to avoid overstimulating neurons
+
+    <Warning>
+      The tick frequency of 10 Hz is carefully chosen to avoid overstimulating the biological neurons. Do not increase without careful consideration.
+    </Warning>
+  </Step>
+
+  <Step title="Start Training Server">
+    On the **training machine** (after CL1 is running), run:
+
+    ```bash
+    ./scripts/run_training_server.sh
+    ```
+
+    This executes:
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host 192.168.240.84 \
+        --max-episodes 300
+    ```
+
+    **What this does:**
+    - Runs in training mode with PPO reinforcement learning
+    - Uses CUDA for GPU acceleration
+    - Connects to CL1 hardware at `192.168.240.84`
+    - Trains for up to 300 episodes
+  </Step>
+
+  <Step title="Monitor Training">
+    The training server outputs episode statistics to `training_log.jsonl` and TensorBoard logs.
+
+    View TensorBoard metrics:
+    ```bash
+    tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+    ```
+
+    Access at: `http://<training-machine-ip>:6006`
+  </Step>
+</Steps>
+
+## Manual Configuration
+
+For custom setups, configure each component manually:
+
+<Tabs>
+  <Tab title="CL1 Device">
+    ### Basic Command
+
+    ```bash
+    python cl1_neural_interface.py --training-host 192.168.1.100
+    ```
+
+    ### Full Configuration Example
+
+    ```bash
+    python cl1_neural_interface.py \
+        --training-host 192.168.1.100 \
+        --stim-port 12345 \
+        --spike-port 12346 \
+        --event-port 12347 \
+        --feedback-port 12348 \
+        --tick-frequency 10 \
+        --recording-path /data/recordings
+    ```
+
+    ### Configuration Options
+
+    | Argument | Default | Description |
+    |----------|---------|-------------|
+    | `--training-host` | **required** | IP address of training system |
+    | `--stim-port` | 12345 | Port for receiving stimulation commands |
+    | `--spike-port` | 12346 | Port for sending spike data |
+    | `--event-port` | 12347 | Port for receiving event metadata |
+    | `--feedback-port` | 12348 | Port for receiving feedback commands |
+    | `--tick-frequency` | 10 | Neural loop frequency in Hz |
+    | `--recording-path` | ./recordings | Directory for saving recordings |
+
+    <Tip>
+      Use absolute paths for `--recording-path` on production systems to ensure recordings are saved to persistent storage.
+    </Tip>
+  </Tab>
+
+  <Tab title="Training Machine">
+    ### Basic Command
+
+    ```bash
+    python training_server.py --mode train --device cuda --cl1-host 192.168.1.50
+    ```
+
+    ### Full Configuration Example
+
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host 192.168.1.50 \
+        --cl1-stim-port 12345 \
+        --cl1-spike-port 12346 \
+        --cl1-event-port 12347 \
+        --cl1-feedback-port 12348 \
+        --max-episodes 1000 \
+        --tick_frequency_hz 10 \
+        --recording_path /data/recordings/doom-neuron
+    ```
+
+    ### Configuration Options
+
+    | Argument | Default | Description |
+    |----------|---------|-------------|
+    | `--mode` | **required** | Operation mode (`train` or `watch`) |
+    | `--device` | cpu | PyTorch device (`cpu` or `cuda`) |
+    | `--cl1-host` | localhost | IP address of CL1 device |
+    | `--max-episodes` | 100000 | Maximum training episodes |
+    | `--cl1-stim-port` | 12345 | Port for sending stimulation to CL1 |
+    | `--cl1-spike-port` | 12346 | Port for receiving spikes from CL1 |
+    | `--cl1-event-port` | 12347 | Port for sending events to CL1 |
+    | `--cl1-feedback-port` | 12348 | Port for sending feedback to CL1 |
+    | `--tick_frequency_hz` | 10 | Game loop frequency in Hz |
+
+    <Warning>
+      The `--device cuda` flag requires a CUDA-capable GPU and proper PyTorch installation with CUDA support.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Advanced Configurations
+
+### Custom Feedback Configuration
+
+<CodeGroup>
+```bash Episode Feedback Only
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --use-episode-feedback \
+    --no-episode-feedback-surprise-scaling
+```
+
+```bash Disable Episode Feedback
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --no-episode-feedback
+```
+</CodeGroup>
+
+### Custom Recording Paths
+
+<CodeGroup>
+```bash CL1 Device
+python cl1_neural_interface.py \
+    --training-host 192.168.1.100 \
+    --recording-path /mnt/data/doom_recordings
+```
+
+```bash Training Server
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --recording_path /mnt/data/doom_recordings
+```
+</CodeGroup>
+
+## Watch Mode (Inference)
+
+To run a trained policy without further training:
+
+```bash
+./scripts/run_frozen_training_server.sh
+```
+
+This executes:
+```bash
+python training_server.py \
+    --mode watch \
+    --device cuda \
+    --cl1-host 192.168.240.84 \
+    --max-episodes 3650
+```
+
+<Warning>
+  Watch mode uses direct hardware access. The UDP interface has not been ported to watch mode yet.
+</Warning>
+
+## Troubleshooting
+
+### Connection Issues
+
+**Symptom:** CL1 interface can't connect to training server
+
+**Solutions:**
+- Verify IP addresses with `ip addr` or `ifconfig`
+- Check firewall rules: `sudo ufw status`
+- Test connectivity: `ping <training-host>`
+- Ensure ports 12345-12348 are open
+
+### Timing Issues
+
+**Symptom:** Training server fails to connect
+
+**Solutions:**
+- Ensure CL1 interface started first
+- Wait 5-10 seconds between starting CL1 and training server
+- Check that both systems are using the same tick frequency
+
+### Performance Issues
+
+**Symptom:** Slow training or high latency
+
+**Solutions:**
+- Ensure machines are on same local network (avoid VPN/WAN)
+- Check network latency: `ping -c 100 <cl1-host>`
+- Monitor GPU usage: `nvidia-smi -l 1`
+- Reduce `--max-episodes` for testing
+
+## Output Files
+
+**CL1 Device** (`/data/recordings/doom-neuron/`):
+```
+*.cl1                     # Neural recordings with metadata
+```
+
+**Training Machine**:
+```
+checkpoints/
+├── episode_*.pt          # Model checkpoints
+└── l5_2048_rand/
+    └── logs/             # TensorBoard logs
+
+training_log.jsonl        # Episode statistics
+```
+
+## Stopping Training
+
+Press `Ctrl+C` on **either** machine to gracefully shutdown both systems:
+
+1. Training server sends completion signal to CL1
+2. CL1 interface saves neural recording and exits
+3. Both processes cleanup UDP sockets
+4. Final checkpoint is saved
+
+## Next Steps
+
+- Configure [DOOM scenarios](/guides/scenarios) for different training challenges
+- Learn [checkpoint management](/guides/checkpoint-management) for resuming training
+- Monitor training with TensorBoard at port 6006

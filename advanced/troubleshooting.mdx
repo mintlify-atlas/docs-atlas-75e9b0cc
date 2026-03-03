@@ -1,0 +1,632 @@
+---
+title: "Troubleshooting"
+description: "Common issues, debugging tips, and TensorBoard monitoring for DOOM Neuron training"
+---
+
+## Common Issues
+
+### No Spikes Detected
+
+**Symptoms:**
+- TensorBoard shows `Spikes/total_count` = 0
+- Agent behavior is random/static
+- Episode rewards flat or declining
+
+**Causes:**
+
+1. **CL1 device not connected**
+   ```bash
+   # Check if CL1 interface is running
+   ps aux | grep cl1_neural_interface
+   ```
+
+2. **UDP port mismatch**
+   ```bash
+   # CL1 side
+   python cl1_neural_interface.py --training-host 192.168.1.100 --spike-port 12346
+   
+   # Training side
+   python training_server.py --cl1-host 192.168.1.50 --cl1-spike-port 12346
+   ```
+
+3. **Firewall blocking UDP**
+   ```bash
+   # Allow ports 12345-12348
+   sudo ufw allow 12345:12348/udp
+   ```
+
+4. **Network latency/packet loss**
+   ```bash
+   # Test connectivity
+   ping -c 10 192.168.1.50
+   
+   # Monitor UDP traffic
+   sudo tcpdump -i eth0 udp port 12346
+   ```
+
+**Solutions:**
+
+<Accordion title="Verify spike collection loop">
+From `cl1_neural_interface.py:200-220`:
+
+```python
+def collect_spikes(self, tick: cl.LoopTick) -> np.ndarray:
+    spike_counts = np.zeros(len(self.channel_groups), dtype=np.float32)
+    for spike in tick.analysis.spikes:
+        idx = self.channel_lookup.get(spike.channel)
+        if idx is not None:
+            spike_counts[idx] += 1
+    return spike_counts
+```
+
+Add debug logging:
+```python
+if len(tick.analysis.spikes) > 0:
+    print(f"Collected {len(tick.analysis.spikes)} spikes")
+```
+</Accordion>
+
+<Accordion title="Check stimulation application">
+From `cl1_neural_interface.py:173-200`:
+
+```python
+def apply_stimulation(
+    self,
+    neurons: cl.Neurons,
+    frequencies: np.ndarray,
+    amplitudes: np.ndarray
+):
+    # Interrupt ongoing stimulation
+    neurons.interrupt(self.config.all_channels_set)
+    
+    # Apply stimulation for each channel set
+    for i, channel_num in enumerate(self.config.encoding_channels):
+        channel_set = cl.ChannelSet(channel_num)
+        amplitude_value = float(amplitudes[i])
+        freq_value = int(frequencies[i])
+        
+        # Create stimulation design
+        stim_design = cl.StimDesign(
+            self.config.phase1_duration,
+            -amplitude_value,  # Negative phase
+            self.config.phase2_duration,
+            amplitude_value    # Positive phase
+        )
+        
+        burst_design = cl.BurstDesign(
+            self.config.burst_count,
+            freq_value
+        )
+        
+        neurons.stim(channel_set, stim_design, burst_design)
+```
+
+Verify stimulation parameters:
+- `frequencies` in range [4.0, 40.0] Hz
+- `amplitudes` in range [1.0, 2.5] μA
+- `phase1_duration` and `phase2_duration` = 160 μs
+</Accordion>
+
+### Training Divergence
+
+**Symptoms:**
+- Reward suddenly drops to zero
+- Policy outputs NaN values
+- Gradient norms explode (>100)
+
+**Causes:**
+
+1. **Learning rate too high**
+   ```python
+   config = PPOConfig(
+       learning_rate=3e-4  # Try 1e-4 or 3e-5
+   )
+   ```
+
+2. **Gradient clipping too weak**
+   ```python
+   config = PPOConfig(
+       max_grad_norm=3.0  # Try 1.0 or 0.5
+   )
+   ```
+
+3. **Unnormalized returns causing value explosion**
+   ```python
+   config = PPOConfig(
+       normalize_returns=True  # From README.md:123
+   )
+   ```
+
+**Solutions:**
+
+<Accordion title="Monitor gradient norms">
+From TensorBoard:
+```bash
+tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+```
+
+Watch these metrics:
+- `Training/Policy_Grad_Norm` (should stay < 10)
+- `Training/Value_Grad_Norm` (should stay < 10)
+- `Training/Encoder_Grad_Norm` (if encoder trainable)
+
+If norms consistently hit `max_grad_norm`, gradients are being clipped. Reduce learning rate.
+</Accordion>
+
+<Accordion title="Check for NaN in policy outputs">
+Add logging to `ppo_doom.py`:
+
+```python
+# After forward pass
+if torch.isnan(forward_logits).any():
+    print("NaN detected in forward_logits!")
+    print(f"Spike features: {spike_features}")
+    print(f"Decoder weights: {self.decoder.forward_head.weight}")
+```
+
+Common causes:
+- Division by zero in normalization
+- Exploding decoder weights (check L2 regularization)
+- Invalid spike counts (negative values)
+</Accordion>
+
+### Low Reward Despite Good Behavior
+
+**Symptoms:**
+- Agent visibly plays well (kills enemies, picks up items)
+- TensorBoard shows low `Episode_Reward`
+- Feedback stimulation seems ineffective
+
+**Causes:**
+
+1. **Reward shaping misconfigured**
+   ```python
+   # From README.md:149
+   config = PPOConfig(
+       simplified_reward=True  # Disables manual shaping
+   )
+   ```
+
+2. **Feedback thresholds too strict**
+   ```python
+   config = PPOConfig(
+       feedback_positive_threshold=1.0,  # Lower to 0.5
+       feedback_negative_threshold=-1.0  # Raise to -0.5
+   )
+   ```
+
+3. **Event feedback channels misconfigured**
+   From `ppo_doom.py:165-257`, check `event_feedback_settings`:
+   ```python
+   'enemy_kill': EventFeedbackConfig(
+       channels=[35, 36, 38],
+       base_frequency=20.0,
+       base_amplitude=2.5,
+       base_pulses=40,
+       info_key='event_enemy_kill',
+       td_sign='positive'
+   )
+   ```
+
+**Solutions:**
+
+<Accordion title="Enable simplified reward">
+From README.md line 149:
+> `simplified_reward=True` disables manually shaped aim alignment and velocity. I did more tuning on `False` so it's probably better kept this way.
+
+For deadly corridor:
+```python
+config = PPOConfig(
+    simplified_reward=False,
+    aim_alignment_gain=2.5,
+    aim_alignment_max_distance=250.0,
+    movement_velocity_reward_scale=0.01
+)
+```
+</Accordion>
+
+<Accordion title="Verify feedback stimulation">
+Check UDP packet transmission:
+```bash
+# On training server
+sudo tcpdump -i eth0 udp port 12348 -X
+```
+
+Inspect `feedback_port` logs for:
+- Packet send count
+- Amplitude/frequency values
+- Channel assignments
+
+From `training_server.py`, feedback is sent via:
+```python
+udp_protocol.send_feedback_command(
+    sock=self.feedback_socket,
+    addr=(self.config.cl1_host, self.config.cl1_feedback_port),
+    channel_set=channel_set,
+    stim_design=(phase1_dur, phase1_amp, phase2_dur, phase2_amp),
+    burst_design=(burst_count, frequency)
+)
+```
+</Accordion>
+
+### Decoder Bias Dominating
+
+**Symptoms:**
+- `Decoder/forward_wx_bias_ratio` < 1.0 (bias larger than weight*input)
+- Ablation modes (`zero`, `random`) show similar performance to real spikes
+- Agent behavior unchanged when neurons are silenced
+
+**Causes:**
+
+1. **`decoder_zero_bias=False`** (default in some configs)
+   ```python
+   config = PPOConfig(
+       decoder_zero_bias=True  # Force bias=0
+   )
+   ```
+
+2. **Decoder MLP learning a static policy**
+   ```python
+   config = PPOConfig(
+       decoder_use_mlp=False  # Use linear readout only
+   )
+   ```
+
+3. **Encoder not trainable**
+   ```python
+   config = PPOConfig(
+       encoder_trainable=True  # Encoder must adapt to neurons
+   )
+   ```
+
+**Solutions:**
+
+<Accordion title="Run ablation tests">
+See [Ablation Modes](/advanced/ablations) page.
+
+Quick test:
+```bash
+# Baseline
+python training_server.py --mode train --decoder-ablation none --max-episodes 500
+
+# Zero ablation (should fail to learn)
+python training_server.py --mode train --decoder-ablation zero --max-episodes 500
+```
+
+Compare TensorBoard metrics. If both show similar reward curves, decoder bias is dominating.
+</Accordion>
+
+<Accordion title="Monitor wx/bias ratio">
+From `ppo_doom.py:718-744`:
+
+```python
+def compute_weight_bias_metrics(self, spike_features: torch.Tensor) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    for name, head in self.heads.items():
+        if isinstance(head, LinearReadoutHead):
+            weight = head.effective_weight()
+            wx = torch.matmul(head_input, weight.t()).abs().mean()
+            bias_mean = head.bias.abs().mean()
+            ratio = float((wx / (bias_mean + eps)).item())
+            metrics[f'Decoder/{name}_wx_bias_ratio'] = ratio
+    return metrics
+```
+
+In TensorBoard, check:
+- `Decoder/forward_wx_bias_ratio` (should be > 1.0)
+- `Decoder/attack_wx_bias_ratio`
+- `Decoder/camera_wx_bias_ratio`
+
+If ratios < 1.0, bias is larger than weighted input.
+</Accordion>
+
+### Network Connectivity Issues
+
+**Symptoms:**
+- `cl1_neural_interface.py` reports "Connection timeout"
+- Training server logs "No spike data received"
+- Sporadic packet loss
+
+**Causes:**
+
+1. **IP address mismatch**
+   ```bash
+   # Find CL1 IP
+   hostname -I
+   
+   # Find training server IP
+   ip addr show
+   ```
+
+2. **Port already in use**
+   ```bash
+   # Check port availability
+   sudo netstat -tulpn | grep 12345
+   
+   # Kill existing process
+   sudo kill <PID>
+   ```
+
+3. **Network latency**
+   ```bash
+   # Measure round-trip time
+   ping -c 100 192.168.1.50 | tail -1
+   ```
+
+**Solutions:**
+
+<Accordion title="Verify UDP socket setup">
+From `cl1_neural_interface.py:145-171`:
+
+```python
+def setup_sockets(self):
+    # Socket for receiving stimulation commands
+    self.stim_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    self.stim_socket.bind(("0.0.0.0", self.stim_port))
+    self.stim_socket.setblocking(False)  # Non-blocking
+    
+    print(f"Listening for stimulation commands on port {self.stim_port}")
+    
+    # Socket for sending spike data
+    self.spike_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    print(f"Will send spike data to {self.training_host}:{self.spike_port}")
+```
+
+Verify output:
+```
+Listening for stimulation commands on port 12345
+Will send spike data to 192.168.1.100:12346
+Listening for event metadata on port 12347
+Listening for feedback commands on port 12348
+```
+</Accordion>
+
+<Accordion title="Test UDP connectivity">
+```bash
+# On training server (192.168.1.100)
+echo "test" | nc -u 192.168.1.50 12345
+
+# On CL1 device (192.168.1.50)
+echo "test" | nc -u 192.168.1.100 12346
+```
+
+If packets don't arrive, check:
+- Firewall rules (`sudo ufw status`)
+- Routing tables (`ip route`)
+- Network interface config (`ifconfig`)
+</Accordion>
+
+## TensorBoard Monitoring
+
+### Essential Metrics
+
+```bash
+tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+```
+
+From README.md lines 60-67:
+```bash
+# Monitor specific run
+tensorboard --logdir checkpoints/l5_2048_rand/logs
+
+# Compare multiple runs
+tensorboard --logdir_spec \
+    baseline:checkpoints/baseline/logs,\
+    ablation:checkpoints/ablation_zero/logs
+```
+
+### Key Plots
+
+<Accordion title="Training Progress">
+**Episode Reward** (`Training/Episode_Reward`)
+- Should increase over time
+- High variance early (exploration)
+- Plateaus indicate convergence or need for curriculum change
+
+**Kill Count** (`Training/Kill_Count`)
+- Tracks combat effectiveness
+- Should correlate with reward
+- Flat = agent not engaging enemies
+
+**Survival Time** (`Training/Survival_Time`)
+- Longer = better policy
+- Sudden drops = environment difficulty increase or policy collapse
+</Accordion>
+
+<Accordion title="Neural Activity">
+**Total Spike Count** (`Spikes/total_count`)
+- Should be > 0 every episode
+- If zero, check CL1 connection and stimulation
+
+**Spikes per Channel Set** (`Spikes/encoding`, `Spikes/move_forward`, etc.)
+- Shows which channels are active
+- Uneven distribution may indicate channel imbalance
+
+**Stimulation Parameters** (`Encoder/freq_mean`, `Encoder/amp_mean`)
+- Frequencies should be in [4.0, 40.0] Hz
+- Amplitudes in [1.0, 2.5] μA
+- Stuck values = encoder not learning
+</Accordion>
+
+<Accordion title="Policy Health">
+**Policy Gradient Norm** (`Training/Policy_Grad_Norm`)
+- Should stay < `max_grad_norm` (default 3.0)
+- Consistently hitting limit = reduce learning rate
+
+**Entropy** (`Training/Entropy`)
+- Measures policy randomness
+- High early (exploration), decreases over time
+- Too low too fast = premature convergence
+
+**KL Divergence** (`Training/KL_Divergence`)
+- Measures policy change between updates
+- Should be small (< 0.1)
+- Large spikes = policy instability
+</Accordion>
+
+<Accordion title="Decoder Diagnostics">
+**wx/bias Ratio** (`Decoder/forward_wx_bias_ratio`)
+- Should be > 1.0 (weights dominate bias)
+- < 1.0 = decoder bias is compensating for spikes
+- If `decoder_zero_bias=True`, bias metrics will be zero
+
+**Weight L2 Norm** (`Decoder/weight_l2`)
+- Tracks decoder weight magnitude
+- Explosion (>1000) = add L2 regularization
+
+**Bias Absolute Mean** (`Decoder/forward_bias_abs_mean`)
+- Should be near zero if `decoder_zero_bias=True`
+- Growing bias = decoder learning static policy
+</Accordion>
+
+### Custom Logging
+
+Add debugging metrics to `ppo_doom.py`:
+
+```python
+# In training loop
+writer.add_scalar('Debug/spike_mean', spike_features.mean(), episode)
+writer.add_scalar('Debug/spike_std', spike_features.std(), episode)
+writer.add_scalar('Debug/reward_positive_count', (rewards > 0).sum(), episode)
+writer.add_histogram('Debug/spike_distribution', spike_features, episode)
+```
+
+## Debugging Commands
+
+### Check Process Status
+
+```bash
+# CL1 device
+ps aux | grep cl1_neural_interface
+
+# Training server
+ps aux | grep training_server
+
+# GPU usage
+nvidia-smi
+```
+
+### Monitor Resource Usage
+
+```bash
+# CPU/Memory
+htop
+
+# Disk I/O (checkpoints)
+iotop
+
+# Network traffic
+iftop
+```
+
+### Inspect Checkpoints
+
+```python
+import torch
+
+# Load checkpoint
+checkpoint = torch.load('checkpoints/l5_2048_rand/episode_1000.pt')
+
+# Inspect keys
+print(checkpoint.keys())
+# dict_keys(['episode', 'policy_state_dict', 'optimizer_state_dict', 'config'])
+
+# Check episode number
+print(f"Episode: {checkpoint['episode']}")
+
+# Inspect policy weights
+policy_state = checkpoint['policy_state_dict']
+print(f"Encoder keys: {[k for k in policy_state.keys() if 'encoder' in k]}")
+print(f"Decoder keys: {[k for k in policy_state.keys() if 'decoder' in k]}")
+```
+
+### Test Neural Interface
+
+```bash
+# CL1 device - run with verbose logging
+python cl1_neural_interface.py \
+    --training-host 192.168.1.100 \
+    --tick-frequency 10 \
+    --recording-path ./test_recordings
+
+# Should output:
+# Listening for stimulation commands on port 12345
+# Will send spike data to 192.168.1.100:12346
+# Listening for event metadata on port 12347
+# Listening for feedback commands on port 12348
+# Neural loop started at 10 Hz
+```
+
+## Getting Help
+
+### Collecting Diagnostic Info
+
+```bash
+# System info
+uname -a
+python --version
+pip list | grep torch
+
+# Network config
+ifconfig
+route -n
+
+# Logs
+tail -n 100 checkpoints/l5_2048_rand/logs/training.log
+```
+
+### Common Error Messages
+
+<Accordion title="RuntimeError: CUDA out of memory">
+**Solution:**
+
+Reduce batch size or steps per update:
+```python
+config = PPOConfig(
+    batch_size=128,  # Down from 256
+    steps_per_update=1024  # Down from 2048
+)
+```
+
+Or switch to CPU:
+```bash
+python training_server.py --mode train --device cpu
+```
+</Accordion>
+
+<Accordion title="ConnectionRefusedError: [Errno 111] Connection refused">
+**Solution:**
+
+CL1 device not running or wrong IP:
+```bash
+# Verify CL1 is running
+ssh user@192.168.1.50 "ps aux | grep cl1"
+
+# Check IP matches
+ping 192.168.1.50
+```
+</Accordion>
+
+<Accordion title="ValueError: Channel X is reserved and cannot be used">
+**Solution:**
+
+From `ppo_doom.py:285-350`, forbidden channels are {0, 4, 7, 56, 63}.
+
+Edit channel assignments:
+```python
+config = PPOConfig(
+    encoding_channels=[8, 9, 10, 17, 18, 25, 27, 28],  # No forbidden channels
+)
+```
+</Accordion>
+
+### Reporting Issues
+
+Include:
+1. Full command used to start training/CL1
+2. TensorBoard screenshots of key metrics
+3. Last 50 lines of logs
+4. Configuration used (`PPOConfig` values)
+5. Network topology (IP addresses, ports)
+6. System specs (GPU, RAM, OS)

@@ -1,0 +1,383 @@
+---
+title: "Checkpoint Management"
+description: "Saving, loading, and resuming training with model checkpoints in DOOM Neuron"
+---
+
+## Overview
+
+DOOM Neuron automatically saves training checkpoints during PPO training. Checkpoints allow you to:
+
+- Resume training after interruptions
+- Evaluate trained policies in watch mode
+- Transfer learning between scenarios
+- Backup training progress
+
+<Tip>
+  The current working checkpoint directory is `checkpoints/l5_2048_rand`. Make copies of this directory to preserve training states.
+</Tip>
+
+## Checkpoint Location
+
+By default, checkpoints are saved to:
+
+```
+checkpoints/
+├── l5_2048_rand/              # Default checkpoint directory
+│   ├── final_model.pt          # Final trained model
+│   ├── episode_1000.pt         # Periodic checkpoint at episode 1000
+│   ├── episode_2000.pt         # Periodic checkpoint at episode 2000
+│   └── logs/                   # TensorBoard logs
+│       └── events.out.tfevents.*
+└── episode_5000.pt             # Additional checkpoint examples
+```
+
+### What's Saved in Checkpoints
+
+Each `.pt` file contains:
+
+- **Policy network weights** (encoder + decoder)
+- **Value network weights**
+- **Optimizer state** (Adam parameters)
+- **Episode number**
+- **Training statistics**
+- **PPO configuration**
+
+## Saving Checkpoints
+
+### Automatic Saving
+
+Checkpoints are saved automatically during training:
+
+```python
+PPOConfig(
+    checkpoint_dir="checkpoints/l5_2048_rand",  # Save location
+    # Checkpoint frequency configured in code
+)
+```
+
+Checkpoints are typically saved:
+- Every N episodes (configured in code)
+- When training completes (`final_model.pt`)
+- On graceful shutdown (`Ctrl+C`)
+
+### Manual Backup
+
+To preserve a checkpoint directory:
+
+```bash
+# Copy entire checkpoint directory
+cp -r checkpoints/l5_2048_rand checkpoints/backup_episode_5000
+
+# Or copy specific checkpoint file
+cp checkpoints/l5_2048_rand/episode_5000.pt checkpoints/my_best_model.pt
+```
+
+<Warning>
+  **Do not modify files while training is running.** Stop training with `Ctrl+C` before copying checkpoint directories.
+</Warning>
+
+## Loading Checkpoints
+
+Load checkpoints to resume training or run inference.
+
+### Resume Training
+
+<Tabs>
+  <Tab title="Local Development">
+    Resume from a specific checkpoint:
+
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host localhost \
+        --checkpoint checkpoints/episode_5000.pt
+    ```
+
+    This will:
+    - Restore policy, value, and optimizer states
+    - Continue from episode 5000
+    - Preserve learning rate schedule
+    - Use existing TensorBoard logs
+  </Tab>
+
+  <Tab title="Remote Training">
+    Resume remote training with CL1 hardware:
+
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host 192.168.1.50 \
+        --checkpoint checkpoints/l5_2048_rand/episode_3000.pt \
+        --max-episodes 10000
+    ```
+
+    **On CL1 device:**
+    ```bash
+    python cl1_neural_interface.py --training-host 192.168.1.100
+    ```
+  </Tab>
+</Tabs>
+
+### Watch Mode (Inference)
+
+Run a trained policy without further learning:
+
+<CodeGroup>
+```bash Using Script
+./scripts/run_watch_server.sh
+```
+
+```bash Manual Command
+python training_server.py \
+    --mode watch \
+    --device cuda \
+    --checkpoint checkpoints/l5_2048_rand/final_model.pt \
+    --cl1-host 127.0.0.1 \
+    --max-episodes 800
+```
+</CodeGroup>
+
+**What happens in watch mode:**
+- Runs `trainer.train()` without policy updates
+- Policy network frozen (no gradient updates)
+- Useful for evaluation and demonstration
+- Still requires CL1 interface running
+
+<Warning>
+  Watch mode uses **direct hardware access**. The UDP interface has not been ported to watch mode yet. Ensure you're using compatible hardware.
+</Warning>
+
+## Advanced Scenarios
+
+### Transfer Learning Between Scenarios
+
+Load a checkpoint trained on one scenario and continue on another:
+
+<Steps>
+  <Step title="Train on Easier Scenario">
+    Start with `deadly_corridor_1.cfg`:
+
+    ```python
+    PPOConfig(
+        doom_config="deadly_corridor_1.cfg",
+        checkpoint_dir="checkpoints/corridor_stage1"
+    )
+    ```
+
+    Train until convergence, producing `checkpoints/corridor_stage1/final_model.pt`.
+  </Step>
+
+  <Step title="Resume on Harder Scenario">
+    Load stage 1 checkpoint and continue on stage 2:
+
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host localhost \
+        --checkpoint checkpoints/corridor_stage1/final_model.pt
+    ```
+
+    Update `PPOConfig.doom_config` in code to `"deadly_corridor_2.cfg"` before running.
+  </Step>
+
+  <Step title="Fine-tune with Lower Learning Rate">
+    For harder scenarios like stage 5, reduce learning rate:
+
+    ```python
+    PPOConfig(
+        doom_config="deadly_corridor_5.cfg",
+        learning_rate=1e-4,  # Lower than default 3e-4
+        checkpoint_dir="checkpoints/corridor_stage5_finetune"
+    )
+    ```
+  </Step>
+</Steps>
+
+### Checkpoint Comparison
+
+Evaluate multiple checkpoints to find the best performer:
+
+```bash
+# Run checkpoint from episode 3000
+python training_server.py \
+    --mode watch \
+    --checkpoint checkpoints/episode_3000.pt \
+    --max-episodes 100
+
+# Run checkpoint from episode 5000
+python training_server.py \
+    --mode watch \
+    --checkpoint checkpoints/episode_5000.pt \
+    --max-episodes 100
+
+# Compare results in training_log.jsonl
+```
+
+### Backup Strategy
+
+Recommended backup workflow for long training runs:
+
+```bash
+#!/bin/bash
+# backup_checkpoints.sh
+
+DATE=$(date +%Y%m%d_%H%M%S)
+SOURCE="checkpoints/l5_2048_rand"
+BACKUP="/data/backups/doom_neuron_${DATE}"
+
+# Stop training first (Ctrl+C)
+echo "Copying checkpoint directory..."
+cp -r "$SOURCE" "$BACKUP"
+
+# Compress for long-term storage
+tar -czf "${BACKUP}.tar.gz" "$BACKUP"
+rm -rf "$BACKUP"
+
+echo "Backup saved to ${BACKUP}.tar.gz"
+```
+
+<Tip>
+  Run backups during natural breaks in training (e.g., after completing a curriculum stage or every 1000 episodes).
+</Tip>
+
+## Checkpoint File Format
+
+Checkpoint files are PyTorch `.pt` files (pickled dictionaries):
+
+```python
+# Example structure
+{
+    'policy_state_dict': {...},      # Encoder + decoder weights
+    'value_state_dict': {...},       # Value network weights
+    'optimizer_state_dict': {...},   # Adam optimizer state
+    'episode': 5000,                 # Episode number
+    'config': {...},                 # PPOConfig snapshot
+    'stats': {...}                   # Training statistics
+}
+```
+
+### Inspecting Checkpoints
+
+Load and inspect checkpoint contents:
+
+```python
+import torch
+
+checkpoint = torch.load('checkpoints/episode_5000.pt')
+print(f"Episode: {checkpoint['episode']}")
+print(f"Config: {checkpoint['config']}")
+print(f"Policy keys: {checkpoint['policy_state_dict'].keys()}")
+```
+
+## Troubleshooting
+
+### Checkpoint Not Found
+
+**Error:** `FileNotFoundError: checkpoints/episode_5000.pt`
+
+**Solutions:**
+- Verify file exists: `ls -lh checkpoints/`
+- Use absolute path: `--checkpoint /home/user/doom-neuron/checkpoints/episode_5000.pt`
+- Check for typos in filename
+
+### Incompatible Checkpoint
+
+**Error:** `RuntimeError: Error loading state_dict`
+
+**Solutions:**
+- Checkpoint may be from different model architecture
+- Ensure `PPOConfig` matches checkpoint configuration
+- Check PyTorch version compatibility
+- Try loading with `map_location='cpu'` first
+
+### Missing TensorBoard Logs
+
+**Symptom:** TensorBoard shows no data after resuming
+
+**Solutions:**
+- Ensure `checkpoint_dir` matches original training directory
+- TensorBoard logs are in `checkpoints/l5_2048_rand/logs/`
+- Use `--logdir` pointing to correct logs directory
+- New logs append to existing event files
+
+### Disk Space Issues
+
+**Symptom:** Training fails with disk full error
+
+**Solutions:**
+- Monitor disk usage: `df -h`
+- Remove old checkpoints: `rm checkpoints/episode_*.pt`
+- Keep only periodic checkpoints (every 1000 episodes)
+- Compress old checkpoints: `gzip checkpoints/episode_*.pt`
+- Use external storage for long-term backups
+
+## Output Files Summary
+
+**Training outputs:**
+```
+checkpoints/
+├── l5_2048_rand/
+│   ├── final_model.pt          # Final model (most important)
+│   ├── episode_*.pt            # Periodic checkpoints
+│   └── logs/                   # TensorBoard event files
+│       └── events.out.tfevents.*
+
+training_log.jsonl              # Episode-by-episode statistics
+
+runs/                           # Additional TensorBoard runs
+└── */
+    └── events.out.tfevents.*
+```
+
+**CL1 recordings:**
+```
+recordings/                     # Local recordings
+└── *.cl1
+
+/data/recordings/doom-neuron/   # Remote recordings
+└── *.cl1
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Save Frequently">
+    Configure checkpoint frequency based on training duration:
+    - **Short runs (under 1000 episodes):** Save every 100 episodes
+    - **Long runs (over 10000 episodes):** Save every 500-1000 episodes
+  </Step>
+
+  <Step title="Keep Multiple Versions">
+    Don't rely on a single checkpoint:
+    - Keep last 3-5 periodic checkpoints
+    - Save milestone checkpoints (curriculum completions)
+    - Backup `final_model.pt` before new training runs
+  </Step>
+
+  <Step title="Name Descriptively">
+    Use informative checkpoint names:
+    ```bash
+    cp checkpoints/final_model.pt checkpoints/stage5_complete_20250115.pt
+    ```
+  </Step>
+
+  <Step title="Monitor Disk Usage">
+    Each checkpoint is ~50-200 MB depending on architecture:
+    ```bash
+    # Check checkpoint sizes
+    du -sh checkpoints/*
+    
+    # Clean up old checkpoints
+    find checkpoints -name "episode_*.pt" -mtime +30 -delete
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+- Learn about [DOOM scenarios](/guides/scenarios) to train across different challenges
+- Set up [remote training](/guides/remote-training) for production checkpoint workflows
+- Monitor training with TensorBoard: `tensorboard --logdir checkpoints/l5_2048_rand/logs`

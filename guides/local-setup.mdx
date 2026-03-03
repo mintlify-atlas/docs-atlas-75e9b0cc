@@ -1,0 +1,188 @@
+---
+title: "Local Setup"
+description: "Setting up DOOM Neuron for local development and testing on a single machine"
+---
+
+## Overview
+
+For local development and testing, you can run both the CL1 neural interface and training server on the same machine. This setup is ideal for:
+
+- Testing code changes without hardware
+- Debugging training pipelines
+- Developing with the SDK
+- Validating configurations before remote deployment
+
+<Warning>
+  Local mode uses `localhost` (127.0.0.1) for all network communication. The CL1 neural interface must be started **before** the training server.
+</Warning>
+
+## Quick Start
+
+<Steps>
+  <Step title="Start CL1 Neural Interface">
+    Run the CL1 interface first using the convenience script:
+
+    ```bash
+    ./scripts/run_sdk_cl1.sh
+    ```
+
+    This executes:
+    ```bash
+    python cl1_neural_interface.py \
+        --training-host 127.0.0.1 \
+        --recording-path recordings \
+        --tick-frequency 10
+    ```
+
+    **What this does:**
+    - Connects to training server at `127.0.0.1` (localhost)
+    - Saves recordings to `./recordings` directory
+    - Runs neural loop at 10 Hz to avoid overstimulation
+  </Step>
+
+  <Step title="Start Training Server">
+    After the CL1 interface is running, launch the training server:
+
+    ```bash
+    ./scripts/run_sdk_training_server.sh
+    ```
+
+    This executes:
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cpu \
+        --cl1-host 127.0.0.1 \
+        --max-episodes 1000
+    ```
+
+    **What this does:**
+    - Runs in training mode with PPO reinforcement learning
+    - Uses CPU device (change to `cuda` if GPU available)
+    - Connects to CL1 interface at `127.0.0.1`
+    - Trains for up to 1000 episodes
+  </Step>
+
+  <Step title="Monitor Training (Optional)">
+    Open `visualisation.html` in a web browser. Update the image source to point to your training server:
+
+    ```html
+    <img id="img" width="640" src="http://127.0.0.1:12349/doom.mjpeg">
+    ```
+
+    This provides a real-time MJPEG stream of the DOOM game state.
+  </Step>
+</Steps>
+
+## Manual Setup
+
+If you need custom configuration, run the commands manually:
+
+<Tabs>
+  <Tab title="CL1 Interface">
+    ```bash
+    python cl1_neural_interface.py --training-host localhost
+    ```
+
+    ### Common Options
+
+    | Argument | Default | Description |
+    |----------|---------|-------------|
+    | `--training-host` | **required** | IP of training system (use `localhost` or `127.0.0.1`) |
+    | `--tick-frequency` | 10 | Neural loop frequency in Hz |
+    | `--recording-path` | ./recordings | Directory for neural recordings |
+    | `--stim-port` | 12345 | Port for receiving stimulation commands |
+    | `--spike-port` | 12346 | Port for sending spike data |
+    | `--event-port` | 12347 | Port for receiving event metadata |
+    | `--feedback-port` | 12348 | Port for receiving feedback commands |
+
+    ### Example with Custom Recording Path
+
+    ```bash
+    python cl1_neural_interface.py \
+        --training-host localhost \
+        --recording-path /data/local_test_recordings \
+        --tick-frequency 10
+    ```
+  </Tab>
+
+  <Tab title="Training Server">
+    ```bash
+    python training_server.py --mode train --device cuda --cl1-host localhost
+    ```
+
+    ### Common Options
+
+    | Argument | Default | Description |
+    |----------|---------|-------------|
+    | `--mode` | **required** | `train` or `watch` |
+    | `--device` | cpu | PyTorch device (`cpu` or `cuda`) |
+    | `--cl1-host` | localhost | IP of CL1 device (use `localhost` or `127.0.0.1`) |
+    | `--max-episodes` | 100000 | Maximum training episodes |
+    | `--show_window` | False | Show VizDoom game window (flag) |
+    | `--tick_frequency_hz` | 10 | Game loop frequency in Hz |
+
+    ### Example with Debug Window
+
+    ```bash
+    python training_server.py \
+        --mode train \
+        --device cuda \
+        --cl1-host localhost \
+        --show_window \
+        --max-episodes 500
+    ```
+  </Tab>
+</Tabs>
+
+## Network Ports
+
+Local setup uses the following UDP ports on `127.0.0.1`:
+
+- **12345** - Stimulation commands (training → CL1)
+- **12346** - Spike data (CL1 → training)
+- **12347** - Event metadata (training → CL1)
+- **12348** - Feedback commands (training → CL1)
+- **12349** - MJPEG stream (training → browser)
+
+<Tip>
+  These ports must be available. Check with `netstat -an | grep 1234` before starting.
+</Tip>
+
+## Output Files
+
+After training, you'll find:
+
+**Training Server outputs:**
+```
+checkpoints/
+├── episode_*.pt          # Model checkpoints
+└── l5_2048_rand/
+    └── logs/             # TensorBoard logs
+
+training_log.jsonl        # Episode statistics
+```
+
+**CL1 Interface outputs:**
+```
+recordings/
+└── *.cl1                 # Neural recordings with metadata
+```
+
+## Stopping Training
+
+Press `Ctrl+C` in either terminal to gracefully shutdown:
+
+1. Training server sends completion signal
+2. CL1 interface saves recording and exits
+3. Both processes cleanup UDP sockets
+
+<Warning>
+  Always stop gracefully with `Ctrl+C` to ensure recordings and checkpoints are saved properly.
+</Warning>
+
+## Next Steps
+
+- Configure [DOOM scenarios](/guides/scenarios) for different training challenges
+- Set up [remote training](/guides/remote-training) with actual CL1 hardware
+- Learn about [checkpoint management](/guides/checkpoint-management) for resuming training

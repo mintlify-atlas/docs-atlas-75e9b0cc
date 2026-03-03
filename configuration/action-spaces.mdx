@@ -1,0 +1,324 @@
+---
+title: 'Action Space Configuration'
+description: 'Configure hybrid vs discrete action spaces, movement controls, camera turning, and attack actions for biological neural control'
+---
+
+## Overview
+
+DOOM Neuron uses a combinatorial action space where the decoder outputs a single categorical distribution over all valid action combinations (movement + camera + attack). This differs from traditional multi-discrete spaces.
+
+## Action Space Mode
+
+<ParamField path="use_discrete_action_set" type="bool" default="False">
+  Legacy flag for action space configuration. Default is `False` in ppo_doom.py or `True` in training_server.py.
+  
+  **In `ppo_doom.py` (8 discrete actions):**
+  - `False`: Hybrid space with 4 independent categoricals (forward, strafe, camera, attack)
+  - `True`: Single categorical over 8 predefined actions
+  
+  **In `training_server.py` (combinatorial space):**
+  - Always uses full combinatorial action space regardless of this flag
+  - Total actions = 3 (forward) × 3 (strafe) × 3 (camera) × 2 (attack) × 1 (speed) = **54 actions**
+  
+  <Note>
+  The training_server.py comment notes: "Legacy flag; combinatorial action space is now default"
+  </Note>
+</ParamField>
+
+## Action Components
+
+### Forward/Backward Movement
+
+<Accordion title="Forward Movement Options">
+  The decoder learns to select from 3 forward movement states:
+  
+  1. **None** (0): No forward/backward movement
+  2. **Forward** (1): Move forward
+  3. **Backward** (2): Move backward
+  
+  These map to DOOM's movement buttons through the `forward_options` list:
+  ```python
+  self.forward_options = ['none', 'forward', 'backward']
+  ```
+</Accordion>
+
+### Strafing Movement
+
+<Accordion title="Strafe Movement Options">
+  The decoder learns to select from 3 strafe states:
+  
+  1. **None** (0): No strafing
+  2. **Left** (1): Strafe left
+  3. **Right** (2): Strafe right
+  
+  These map to DOOM's strafe buttons:
+  ```python
+  self.strafe_options = ['none', 'left', 'right']
+  ```
+</Accordion>
+
+### Camera Control
+
+<ParamField path="max_turn_delta" type="float" default="360.0">
+  Maximum absolute degrees for continuous camera turning (not used in current discrete implementation).
+</ParamField>
+
+<ParamField path="turn_step_degrees" type="float" default="30.0">
+  Discrete turn step size in degrees when using turn buttons.
+  
+  Each turn action rotates the camera by this amount.
+</ParamField>
+
+<Accordion title="Camera Turn Options">
+  The decoder learns to select from 3 camera states:
+  
+  1. **None** (0): No camera rotation
+  2. **Turn Left** (1): Rotate left by `turn_step_degrees`
+  3. **Turn Right** (2): Rotate right by `turn_step_degrees`
+  
+  Camera options:
+  ```python
+  self.camera_options = ['none', 'turn_left', 'turn_right']
+  ```
+</Accordion>
+
+```python
+config = PPOConfig(
+    turn_step_degrees=45.0  # Faster camera rotation
+)
+```
+
+### Attack Action
+
+<Accordion title="Attack Options">
+  The decoder learns to select from 2 attack states:
+  
+  1. **Idle** (0): Don't shoot
+  2. **Attack** (1): Fire weapon
+  
+  In `training_server.py`:
+  ```python
+  self.attack_options = ['idle', 'attack']
+  ```
+  
+  In `ppo_doom.py`, attack is a Bernoulli distribution (binary choice).
+</Accordion>
+
+### Speed Control (Training Server Only)
+
+<Accordion title="Speed Options">
+  In `training_server.py`, speed action is included but always set to 'off':
+  
+  ```python
+  self.speed_options = ['off']  # Speed action removed - always off
+  ```
+  
+  This was part of the action space but is currently disabled.
+</Accordion>
+
+## Action Space Implementations
+
+### Hybrid Action Space (ppo_doom.py)
+
+When `use_discrete_action_set=False`, uses 4 independent categorical distributions:
+
+```python
+# Decoder outputs 4 separate logit heads
+forward_logits, strafe_logits, camera_logits, attack_logits, discrete_logits = self.decoder(spike_features)
+
+# Sample independently
+forward_dist = Categorical(logits=forward_logits)   # 3 options
+strafe_dist = Categorical(logits=strafe_logits)     # 3 options
+camera_dist = Categorical(logits=camera_logits)     # 3 options
+attack_dist = Bernoulli(logits=attack_logits)       # 2 options
+
+# Total log prob is sum of independent log probs
+log_probs = (
+    forward_dist.log_prob(forward_actions) +
+    strafe_dist.log_prob(strafe_actions) +
+    camera_dist.log_prob(camera_actions) +
+    attack_dist.log_prob(attack_actions.float())
+)
+```
+
+### Discrete Action Set (ppo_doom.py)
+
+When `use_discrete_action_set=True`, uses single categorical over 8 predefined actions:
+
+```python
+self.discrete_action_defs = [
+    {'name': 'noop',         'forward': 0, 'strafe': 0, 'turn': 0, 'attack': 0},
+    {'name': 'forward',      'forward': 1, 'strafe': 0, 'turn': 0, 'attack': 0},
+    {'name': 'backward',     'forward': 2, 'strafe': 0, 'turn': 0, 'attack': 0},
+    {'name': 'strafe_left',  'forward': 0, 'strafe': 1, 'turn': 0, 'attack': 0},
+    {'name': 'strafe_right', 'forward': 0, 'strafe': 2, 'turn': 0, 'attack': 0},
+    {'name': 'turn_left',    'forward': 0, 'strafe': 0, 'turn': 1, 'attack': 0},
+    {'name': 'turn_right',   'forward': 0, 'strafe': 0, 'turn': 2, 'attack': 0},
+    {'name': 'attack',       'forward': 0, 'strafe': 0, 'turn': 0, 'attack': 1},
+]
+```
+
+### Combinatorial Action Space (training_server.py)
+
+Uses full Cartesian product of all action components:
+
+```python
+# Generate all valid combinations
+for forward_idx in [0, 1, 2]:      # 3 forward options
+    for strafe_idx in [0, 1, 2]:   # 3 strafe options
+        for turn_idx in [0, 1, 2]: # 3 camera options
+            for attack_idx in [0, 1]: # 2 attack options
+                for speed_idx in [0]:  # 1 speed option (always off)
+                    action_name = f"{forward}_{strafe}_{turn}_{attack}_{speed}"
+                    # Add to action space
+
+# Total: 3 × 3 × 3 × 2 × 1 = 54 actions
+```
+
+Decoder outputs single categorical over all 54 combinations:
+
+```python
+joint_logits = self.decoder(spike_features)  # Shape: (batch, 54)
+joint_dist = Categorical(logits=joint_logits)
+joint_actions = joint_dist.sample()  # Single action index 0-53
+
+# Map back to components
+forward_actions = self.joint_forward_map[joint_actions]
+strafe_actions = self.joint_strafe_map[joint_actions]
+camera_actions = self.joint_turn_map[joint_actions]
+attack_actions = self.joint_attack_map[joint_actions]
+```
+
+## Channel Assignments
+
+Each action component has dedicated neural channels for stimulation:
+
+<ParamField path="move_forward_channels" type="List[int]" default="[41, 42, 49]">
+  Channels assigned to forward movement encoding.
+</ParamField>
+
+<ParamField path="move_backward_channels" type="List[int]" default="[50, 51, 58]">
+  Channels assigned to backward movement encoding.
+</ParamField>
+
+<ParamField path="move_left_channels" type="List[int]" default="[13, 14, 21]">
+  Channels assigned to left strafe encoding.
+</ParamField>
+
+<ParamField path="move_right_channels" type="List[int]" default="[45, 46, 53]">
+  Channels assigned to right strafe encoding.
+</ParamField>
+
+<ParamField path="turn_left_channels" type="List[int]" default="[29, 30, 31, 37]">
+  Channels assigned to left camera turn encoding.
+</ParamField>
+
+<ParamField path="turn_right_channels" type="List[int]" default="[59, 60, 61, 62]">
+  Channels assigned to right camera turn encoding.
+</ParamField>
+
+<ParamField path="attack_channels" type="List[int]" default="[32, 33, 34]">
+  Channels assigned to attack action encoding.
+</ParamField>
+
+<ParamField path="encoding_channels" type="List[int]" default="[8, 9, 10, 17, 18, 25, 27, 28, 57]">
+  Channels assigned to general state encoding (not directly action-related).
+  
+  <Note>
+  Default is `[8, 9, 10, 17, 18, 25, 27, 28, 57]` in ppo_doom.py or `[8, 9, 10, 17, 18, 25, 27, 28]` in training_server.py (reduced from 9 to 8 channels after removing speed action).
+  </Note>
+</ParamField>
+
+```python
+config = PPOConfig(
+    # Custom channel assignments
+    move_forward_channels=[10, 11, 12],
+    move_backward_channels=[13, 14, 15],
+    attack_channels=[20, 21, 22]
+)
+```
+
+## Example Configurations
+
+### Hybrid Action Space (4 Independent Categoricals)
+
+```python
+hybrid_config = PPOConfig(
+    use_discrete_action_set=False,
+    turn_step_degrees=30.0
+)
+# Results in independent sampling:
+# - Forward: 3 options
+# - Strafe: 3 options  
+# - Camera: 3 options
+# - Attack: 2 options
+# Effective action space: can combine any forward + strafe + camera + attack
+```
+
+### Simple Discrete Actions (8 Actions)
+
+```python
+discrete_config = PPOConfig(
+    use_discrete_action_set=True,
+    turn_step_degrees=30.0
+)
+# Results in 8 predefined actions:
+# noop, forward, backward, strafe_left, strafe_right, 
+# turn_left, turn_right, attack
+```
+
+### Full Combinatorial Space (54 Actions)
+
+```python
+# Used in training_server.py
+combinatorial_config = PPOConfig(
+    use_discrete_action_set=True,  # Legacy flag, ignored
+    turn_step_degrees=30.0
+)
+# Results in 54 joint actions (3×3×3×2×1)
+# Allows simultaneous movement, turning, and shooting
+```
+
+### Custom Channel Layout
+
+```python
+custom_channels_config = PPOConfig(
+    encoding_channels=[1, 2, 3, 4, 5, 6, 7, 8],
+    move_forward_channels=[20, 21, 22],
+    move_backward_channels=[23, 24, 25],
+    move_left_channels=[26, 27, 28],
+    move_right_channels=[29, 30, 31],
+    turn_left_channels=[40, 41, 42, 43],
+    turn_right_channels=[44, 45, 46, 47],
+    attack_channels=[50, 51, 52]
+)
+```
+
+## Debugging
+
+<ParamField path="debug_joint_actions" type="bool" default="True">
+  Enable debug logging of joint action selections. Only available in training_server.py.
+</ParamField>
+
+<ParamField path="debug_joint_actions_limit" type="int" default="500">
+  Maximum number of debug prints for joint actions. Only available in training_server.py.
+</ParamField>
+
+```python
+config = PPOConfig(
+    debug_joint_actions=True,
+    debug_joint_actions_limit=100
+)
+# Prints: [DEBUG] joint_action=23 (fwd=1, strafe=2, turn=0, attack=1, speed=0) | attack_ratio=0.35
+```
+
+## Related Configuration
+
+<CardGroup cols={2}>
+  <Card title="Encoder/Decoder" icon="brain" href="/configuration/encoder-decoder">
+    Network architecture for action decoding
+  </Card>
+  <Card title="Feedback Tuning" icon="wave-pulse" href="/configuration/feedback-tuning">
+    Stimulation feedback parameters
+  </Card>
+</CardGroup>

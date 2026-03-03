@@ -1,0 +1,232 @@
+---
+title: 'PPO Configuration'
+description: 'Complete reference for PPOConfig parameters including learning rate, gamma, GAE, entropy coefficients, and batch size settings for PPO reinforcement learning'
+---
+
+## Overview
+
+The `PPOConfig` dataclass defines all hyperparameters for Proximal Policy Optimization (PPO) training. These parameters control the learning dynamics, advantage estimation, clipping behavior, and training batch configuration.
+
+## Core PPO Hyperparameters
+
+### Learning Rate
+
+<ParamField path="learning_rate" type="float" default="3e-4">
+  Adam optimizer learning rate for all network components (encoder, decoder, value network).
+  
+  Controls the step size for gradient descent updates. Lower values provide more stable but slower learning.
+</ParamField>
+
+```python
+config = PPOConfig(
+    learning_rate=1e-4  # More conservative learning rate
+)
+```
+
+### Discount Factor (Gamma)
+
+<ParamField path="gamma" type="float" default="0.99">
+  Reward discount factor for future rewards.
+  
+  Determines how much the agent values future rewards versus immediate rewards. Values closer to 1.0 prioritize long-term planning.
+  
+  <Note>
+  In `training_server.py`, this is increased to `0.997` for longer-horizon planning in DOOM survival scenarios.
+  </Note>
+</ParamField>
+
+```python
+config = PPOConfig(
+    gamma=0.997  # Increased for survival scenarios
+)
+```
+
+### Generalized Advantage Estimation (GAE)
+
+<ParamField path="gae_lambda" type="float" default="0.95">
+  Lambda parameter for GAE advantage estimation.
+  
+  Controls the bias-variance tradeoff in advantage estimation:
+  - `1.0` = high variance, low bias (uses full Monte Carlo returns)
+  - `0.0` = low variance, high bias (uses only 1-step TD)
+  - `0.95` = recommended balanced setting
+</ParamField>
+
+```python
+config = PPOConfig(
+    gae_lambda=0.95  # Standard balanced setting
+)
+```
+
+### Clipping and Loss Coefficients
+
+<ParamField path="clip_epsilon" type="float" default="0.2">
+  PPO policy clipping parameter.
+  
+  Limits the size of policy updates to prevent destructively large changes. The policy ratio is clipped to `[1 - epsilon, 1 + epsilon]`.
+</ParamField>
+
+<ParamField path="value_loss_coef" type="float" default="0.3">
+  Coefficient for value function loss in total loss calculation.
+  
+  Total loss = policy_loss + `value_loss_coef` * value_loss + `entropy_coef` * entropy_loss
+</ParamField>
+
+<ParamField path="entropy_coef" type="float" default="0.02">
+  Entropy bonus coefficient for policy exploration.
+  
+  Encourages exploration by penalizing overly deterministic policies. Higher values increase randomness in action selection.
+</ParamField>
+
+```python
+config = PPOConfig(
+    clip_epsilon=0.15,      # Tighter clipping for stability
+    value_loss_coef=0.5,    # Stronger value learning
+    entropy_coef=0.01       # Less exploration
+)
+```
+
+### Gradient Clipping
+
+<ParamField path="max_grad_norm" type="float" default="3.0">
+  Maximum gradient norm for gradient clipping.
+  
+  Prevents exploding gradients by clipping the global norm of gradients to this value.
+  
+  <Warning>
+  Comment in code notes: "This can probably be reduced to 1, 0.5 was clipping policy movements too much"
+  </Warning>
+</ParamField>
+
+```python
+config = PPOConfig(
+    max_grad_norm=1.0  # More aggressive clipping
+)
+```
+
+### Return Normalization
+
+<ParamField path="normalize_returns" type="bool" default="True">
+  Whether to normalize advantage estimates and returns.
+  
+  Normalizes advantages to have zero mean and unit variance, which can stabilize training.
+  
+  <Note>
+  In `ppo_doom.py`: "Leave this on for the most part, stabilizes the critic, maybe a running norm would be better?"
+  
+  In `training_server.py`: Set to `False` as part of DOOM Initial Report tuning.
+  </Note>
+</ParamField>
+
+```python
+config = PPOConfig(
+    normalize_returns=True  # Stabilizes critic learning
+)
+```
+
+## Training Configuration
+
+### Batch and Episode Settings
+
+<ParamField path="num_envs" type="int" default="1">
+  Number of parallel environments for data collection.
+  
+  Currently only single environment is supported due to hardware constraints.
+</ParamField>
+
+<ParamField path="steps_per_update" type="int" default="2048">
+  Number of environment steps collected before each PPO update.
+  
+  Total samples per update = `num_envs` × `steps_per_update`
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="256">
+  Minibatch size for SGD updates during PPO epochs.
+  
+  The collected `steps_per_update` samples are divided into minibatches of this size for optimization.
+</ParamField>
+
+<ParamField path="num_epochs" type="int" default="4">
+  Number of optimization epochs per PPO update.
+  
+  How many times to iterate over the collected batch of experience. More epochs can improve sample efficiency but risk overfitting to old data.
+</ParamField>
+
+<ParamField path="max_episodes" type="int" default="2000">
+  Maximum number of training episodes before termination.
+</ParamField>
+
+```python
+config = PPOConfig(
+    steps_per_update=4096,  # Collect more samples
+    batch_size=512,         # Larger batches
+    num_epochs=8            # More optimization per batch
+)
+```
+
+## Example Configurations
+
+### Conservative Training
+
+```python
+conservative_config = PPOConfig(
+    learning_rate=1e-4,
+    gamma=0.99,
+    gae_lambda=0.95,
+    clip_epsilon=0.1,
+    value_loss_coef=0.5,
+    entropy_coef=0.01,
+    max_grad_norm=0.5,
+    normalize_returns=True,
+    steps_per_update=2048,
+    batch_size=128,
+    num_epochs=3
+)
+```
+
+### Aggressive Exploration
+
+```python
+exploration_config = PPOConfig(
+    learning_rate=5e-4,
+    gamma=0.99,
+    gae_lambda=0.90,
+    clip_epsilon=0.3,
+    value_loss_coef=0.2,
+    entropy_coef=0.05,      # Higher entropy for more exploration
+    max_grad_norm=5.0,
+    normalize_returns=False,
+    steps_per_update=4096,
+    batch_size=512,
+    num_epochs=4
+)
+```
+
+### Long-Horizon Survival (DOOM)
+
+```python
+survival_config = PPOConfig(
+    learning_rate=3e-4,
+    gamma=0.997,            # Higher gamma for long-term planning
+    gae_lambda=0.95,
+    clip_epsilon=0.2,
+    value_loss_coef=0.3,
+    entropy_coef=0.02,
+    max_grad_norm=3.0,
+    normalize_returns=False,
+    steps_per_update=2048,
+    batch_size=256,
+    num_epochs=4
+)
+```
+
+## Related Configuration
+
+<CardGroup cols={2}>
+  <Card title="Encoder/Decoder" icon="brain" href="/configuration/encoder-decoder">
+    Network architecture settings
+  </Card>
+  <Card title="Action Spaces" icon="gamepad" href="/configuration/action-spaces">
+    Action space configuration
+  </Card>
+</CardGroup>

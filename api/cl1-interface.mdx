@@ -1,0 +1,453 @@
+---
+title: cl1_neural_interface.py
+description: Hardware interface server that runs on CL1 device to manage neural stimulation and spike recording
+---
+
+## Overview
+
+`cl1_neural_interface.py` is a minimal hardware interface server that runs directly on the CL1 device. It handles all neural hardware operations while the training logic runs remotely.
+
+**Responsibilities:**
+- Receive stimulation commands via UDP from training server
+- Apply stimulation to biological neurons using CL SDK
+- Collect spike responses from neural hardware
+- Send spike counts back to training server via UDP
+- Record neural activity to disk
+- Log event metadata to CL DataStream
+
+**Architecture:**
+- **Zero computation:** No PyTorch, no game logic, no policy inference
+- **Pure I/O:** UDP receive → hardware stimulation → spike collection → UDP send
+- **Real-time:** Hardware loop runs at configurable tick frequency (typically 10-240 Hz)
+
+**Location:** `source/cl1_neural_interface.py`
+
+## Command-Line Arguments
+
+### Network Configuration
+
+<ParamField path="--training-host" type="string" required>
+  IP address of the remote training system
+  
+  **Required parameter.** The CL1 device sends spike data to this address.
+  
+  Example: `--training-host 192.168.1.50`
+</ParamField>
+
+<ParamField path="--stim-port" type="integer" default="12345">
+  UDP port for receiving stimulation commands from training system
+  
+  The CL1 device listens on this port (bound to `0.0.0.0`).
+  
+  Must match `--cl1-stim-port` on training server.
+</ParamField>
+
+<ParamField path="--spike-port" type="integer" default="12346">
+  UDP port for sending spike data to training system
+  
+  The CL1 device sends spike packets to `<training-host>:<spike-port>`.
+  
+  Must match `--cl1-spike-port` on training server.
+</ParamField>
+
+<ParamField path="--event-port" type="integer" default="12347">
+  UDP port for receiving event metadata from training system
+  
+  Events include episode completions, checkpoints, and training completion signals.
+  
+  Must match `--cl1-event-port` on training server.
+</ParamField>
+
+<ParamField path="--feedback-port" type="integer" default="12348">
+  UDP port for receiving feedback stimulation commands from training system
+  
+  Feedback includes reward signals and event-based stimulation.
+  
+  Must match `--cl1-feedback-port` on training server.
+</ParamField>
+
+### Hardware Configuration
+
+<ParamField path="--tick-frequency" type="integer" default="10">
+  Frequency (Hz) to run the CL hardware loop
+  
+  Controls the rate of:
+  - Applying neural stimulation
+  - Collecting spike responses
+  - Sending spike data to training system
+  
+  **Typical values:**
+  - `10 Hz`: Slow, stable, good for debugging
+  - `30 Hz`: Normal gameplay speed
+  - `60 Hz`: Fast gameplay
+  - `120-240 Hz`: Maximum performance (experimental)
+  
+  Must match `--tick_frequency_hz` on training server.
+</ParamField>
+
+<ParamField path="--recording-path" type="string" default="./recordings">
+  Directory path for saving CL1 neural recordings
+  
+  Recordings contain raw neural data (spikes, stimulation, events) captured during training.
+  
+  Example: `--recording-path /data/recordings/doom-neuron`
+</ParamField>
+
+## Usage Examples
+
+### Basic Setup
+
+```bash
+python cl1_neural_interface.py \
+  --training-host 192.168.1.50 \
+  --tick-frequency 10
+```
+
+### Custom Ports
+
+```bash
+python cl1_neural_interface.py \
+  --training-host 192.168.1.50 \
+  --stim-port 5000 \
+  --spike-port 5001 \
+  --event-port 5002 \
+  --feedback-port 5003
+```
+
+### High-Frequency Loop
+
+```bash
+python cl1_neural_interface.py \
+  --training-host 192.168.1.50 \
+  --tick-frequency 120 \
+  --recording-path /data/high_freq_recordings
+```
+
+### Custom Recording Location
+
+```bash
+python cl1_neural_interface.py \
+  --training-host 192.168.1.50 \
+  --recording-path /mnt/external/doom_recordings
+```
+
+## Architecture
+
+### CL1Config Class
+
+Minimal configuration matching the training system:
+
+```python
+class CL1Config:
+    # Channel assignments (must match training system)
+    encoding_channels      = [8, 9, 10, 17, 18, 25, 27, 28]
+    move_forward_channels  = [41, 42, 49]
+    move_backward_channels = [50, 51, 58]
+    move_left_channels     = [13, 14, 21]
+    move_right_channels    = [45, 46, 53]
+    turn_left_channels     = [29, 30, 31, 37]
+    turn_right_channels    = [59, 60, 61, 62]
+    attack_channels        = [32, 33, 34]
+    
+    # Stimulation parameters
+    phase1_duration = 120  # μs
+    phase2_duration = 120  # μs
+    burst_count = 1
+```
+
+### CL1NeuralInterface Class
+
+Main interface class with methods:
+
+#### `setup_sockets()`
+Create and bind UDP sockets for communication.
+
+#### `apply_stimulation(neurons, frequencies, amplitudes)`
+Apply stimulation to neural hardware based on received commands.
+
+**Parameters:**
+- `neurons`: CL SDK neurons interface
+- `frequencies`: np.ndarray of shape `(num_channel_sets,)` with Hz values
+- `amplitudes`: np.ndarray of shape `(num_channel_sets,)` with μA values
+
+**Process:**
+1. Interrupt ongoing stimulation on all channels
+2. For each encoding channel, create `StimDesign` and `BurstDesign`
+3. Apply stimulation via `neurons.stim()`
+4. Cache designs to avoid repeated object creation
+
+#### `collect_spikes(tick)`
+Collect and count spikes from CL SDK tick.
+
+**Parameters:**
+- `tick`: `cl.LoopTick` object from `neurons.loop()`
+
+**Returns:**
+- `spike_counts`: np.ndarray of shape `(num_channel_sets,)` with spike counts per channel group
+
+**Process:**
+1. Initialize zero array for spike counts
+2. Iterate through `tick.analysis.spikes`
+3. Map each spike's channel to its group index
+4. Increment corresponding group counter
+
+#### `apply_feedback_command(neurons, feedback_type, channels, frequency, amplitude, pulses, unpredictable, event_name)`
+Apply feedback stimulation to neural hardware.
+
+**Parameters:**
+- `neurons`: CL SDK neurons interface
+- `feedback_type`: `"interrupt"`, `"event"`, or `"reward"`
+- `channels`: List of channel numbers
+- `frequency`: Stimulation frequency in Hz
+- `amplitude`: Stimulation amplitude in μA
+- `pulses`: Number of pulses/bursts
+- `unpredictable`: Whether this is unpredictable stimulation
+- `event_name`: Name of event (for logging)
+
+**Feedback Types:**
+- `interrupt`: Stop ongoing stimulation on specified channels
+- `event`: Apply event-based feedback (kills, damage, pickups)
+- `reward`: Apply reward-based feedback (positive/negative)
+
+#### `run()`
+Main hardware loop:
+
+```python
+with cl.open() as neurons:
+    recording = neurons.record(
+        file_suffix=f"cl1_interface_{tick_frequency_hz}_hz",
+        file_location=recording_path
+    )
+    
+    for tick in neurons.loop(ticks_per_second=tick_frequency_hz):
+        # 1. Try to receive stimulation command (non-blocking)
+        try:
+            packet = stim_socket.recvfrom(STIM_PACKET_SIZE)
+            frequencies, amplitudes = unpack_stimulation_command(packet)
+            apply_stimulation(neurons, frequencies, amplitudes)
+        except BlockingIOError:
+            pass  # No packet available
+        
+        # 2. Collect spikes from this tick
+        spike_counts = collect_spikes(tick)
+        
+        # 3. Send spike data to training system
+        spike_packet = pack_spike_data(spike_counts)
+        spike_socket.sendto(spike_packet, (training_host, spike_port))
+        
+        # 4. Check for event metadata (non-blocking)
+        try:
+            event_packet = event_socket.recvfrom(4096)
+            timestamp, event_type, data = unpack_event_metadata(event_packet)
+            
+            if event_type == "episode_end":
+                event_datastream.append(tick.timestamp, data)
+            elif event_type == "training_complete":
+                recording.stop()
+                return  # Exit gracefully
+        except BlockingIOError:
+            pass
+        
+        # 5. Check for feedback commands (non-blocking)
+        try:
+            feedback_packet = feedback_socket.recvfrom(FEEDBACK_PACKET_SIZE)
+            timestamp, feedback_type, channels, freq, amp, pulses, unpred, name = \
+                unpack_feedback_command(feedback_packet)
+            apply_feedback_command(neurons, feedback_type, channels, freq, amp, pulses, unpred, name)
+        except BlockingIOError:
+            pass
+```
+
+## Hardware Loop Details
+
+### Stimulation Design Caching
+
+To avoid creating new `StimDesign` and `BurstDesign` objects every tick, designs are cached using an LRU cache:
+
+```python
+self._stim_cache = LRUCache(maxsize=2048)
+
+cache_key = (channel_idx, frequency_hz, round(amplitude_ua, 4))
+
+def _factory():
+    stim_design = cl.StimDesign(phase1_duration, -amplitude, phase2_duration, amplitude)
+    burst_design = cl.BurstDesign(burst_count, frequency)
+    return (stim_design, burst_design)
+
+stim_design, burst_design = self._stim_cache.get_or_set(cache_key, _factory)
+```
+
+### Channel Mapping
+
+Spikes are mapped to channel groups for counting:
+
+```python
+self.channel_lookup = {
+    8: 0, 9: 0, 10: 0, 17: 0, 18: 0, 25: 0, 27: 0, 28: 0,  # encoding
+    41: 1, 42: 1, 49: 1,  # move_forward
+    50: 2, 51: 2, 58: 2,  # move_backward
+    13: 3, 14: 3, 21: 3,  # move_left
+    45: 4, 46: 4, 53: 4,  # move_right
+    29: 5, 30: 5, 31: 5, 37: 5,  # turn_left
+    59: 6, 60: 6, 61: 6, 62: 6,  # turn_right
+    32: 7, 33: 7, 34: 7,  # attack
+}
+```
+
+### Non-Blocking I/O
+
+All UDP sockets use non-blocking mode to prevent loop stalling:
+
+```python
+stim_socket.setblocking(False)
+event_socket.setblocking(False)
+feedback_socket.setblocking(False)
+```
+
+Missing packets are handled gracefully:
+- No stimulation command → continue with previous stimulation
+- No event → continue loop
+- No feedback → continue loop
+
+## Recording & Logging
+
+### CL Recording
+
+Neural recordings are saved to disk automatically:
+
+```python
+recording = neurons.record(
+    file_suffix=f"cl1_interface_{tick_frequency_hz}_hz",
+    file_location=recording_path,
+    attributes={"tick_frequency": tick_frequency_hz}
+)
+```
+
+**Recording Contents:**
+- Raw spike data (all channels)
+- Stimulation commands
+- Timestamps
+- Metadata attributes
+
+### DataStream Events
+
+Episode metadata is logged to a CL DataStream:
+
+```python
+event_datastream = neurons.create_data_stream(
+    name="cl1_neural_interface",
+    attributes={"used_channels": used_channels}
+)
+
+event_datastream.append(tick.timestamp, {
+    "episode": 1234,
+    "total_reward": 450.5,
+    "episode_length": 512,
+    "kills": 3
+})
+```
+
+### Statistics Logging
+
+Statistics are printed every 10 seconds:
+
+```
+Stats: 1200 ticks | Recv: 119.8 pkt/s | Send: 120.0 pkt/s | 
+       Events: 2 | Feedback: 15 | Avg spikes: 3.42/tick
+```
+
+**Metrics:**
+- `ticks`: Total hardware loop iterations in this period
+- `Recv`: Stimulation packets received per second
+- `Send`: Spike packets sent per second
+- `Events`: Event metadata packets received
+- `Feedback`: Feedback command packets received
+- `Avg spikes`: Average spike count per tick across all channel groups
+
+## Graceful Shutdown
+
+The interface handles shutdown gracefully:
+
+### Training Complete Event
+
+When the training system sends a `training_complete` event:
+
+```python
+if event_type == "training_complete":
+    print(f"TRAINING COMPLETE")
+    print(f"  Total Episodes: {data['total_episodes']}")
+    print(f"  Total Steps: {data['total_steps']}")
+    recording.stop()
+    return  # Exit run() method
+```
+
+### Keyboard Interrupt
+
+When interrupted with Ctrl+C:
+
+```python
+try:
+    for tick in neurons.loop(...):
+        # ...
+except KeyboardInterrupt:
+    print("\n\nShutting down...")
+finally:
+    recording.stop()
+    print("Total ticks processed: {tick_count}")
+    print("Total spikes collected: {total_spikes}")
+```
+
+## Troubleshooting
+
+### CL SDK Connection Failed
+
+```
+Error: Unable to connect to CL1 hardware
+```
+
+**Solutions:**
+- Ensure CL1 device is powered on
+- Check USB connection
+- Verify CL SDK is installed: `python -c "import cl"`
+- Run with `sudo` if permission denied
+
+### No Stimulation Commands Received
+
+```
+Stats: 1200 ticks | Recv: 0.0 pkt/s | Send: 120.0 pkt/s
+```
+
+**Solutions:**
+- Verify training system is running
+- Check network connectivity: `ping <training-host>`
+- Ensure firewall allows UDP on stim port
+- Verify port numbers match on both systems
+
+### High Latency
+
+```
+Packet latency: 25.43 ms
+```
+
+**Solutions:**
+- Use wired network instead of WiFi
+- Reduce network traffic on shared network
+- Check for CPU throttling on CL1 device
+- Reduce tick frequency temporarily
+
+### Recording Failed to Save
+
+```
+Error: Failed to create recording directory
+```
+
+**Solutions:**
+- Ensure recording path exists: `mkdir -p /data/recordings/doom-neuron`
+- Check disk space: `df -h`
+- Verify write permissions: `ls -ld /data/recordings`
+
+## See Also
+
+- [training_server.py](/api/training-server) - Remote training server
+- [udp_protocol.py](/api/udp-protocol) - UDP packet formats
+- [ppo_doom.py](/api/ppo-doom) - Direct CL1 training script

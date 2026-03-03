@@ -1,0 +1,255 @@
+---
+title: "Ablation Modes"
+description: "Validate neural contributions by comparing real CL1 spikes against zero and random controls"
+---
+
+## Overview
+
+Ablation modes allow you to test whether the CL1 biological neurons are genuinely learning, or if the decoder network is doing all the work. By replacing real neural spikes with controlled alternatives, you can isolate and validate the neurons' contribution to gameplay.
+
+<Tip>
+Ablations are critical for scientific validation. Without them, you cannot prove that the biological neurons (rather than the decoder/PPO policy) are responsible for learned behavior.
+</Tip>
+
+## Available Ablation Modes
+
+### `none` (Default)
+
+Use actual spike data from the CL1 hardware. This is the standard training/evaluation mode.
+
+```python
+config = PPOConfig(
+    decoder_ablation_mode='none'
+)
+```
+
+In this mode, spike features flow directly from `collect_spikes()` to the decoder:
+
+```python
+# ppo_doom.py:1066-1082
+def collect_spikes(self, tick: 'cl.LoopTick') -> np.ndarray:
+    """
+    Collect and count spikes from CL SDK tick.
+    
+    Returns:
+        spike_counts: (num_channel_sets,) array of spike counts per channel set
+    """
+    spike_counts = np.zeros(self.num_channel_sets, dtype=np.float32)
+    for spike in tick.analysis.spikes:
+        idx = self.channel_lookup.get(spike.channel)
+        if idx is not None:
+            spike_counts[idx] += 1
+    
+    return spike_counts
+```
+
+### `zero`
+
+Replace all spike counts with zeros. This tests what happens when the decoder receives no neural input.
+
+```python
+config = PPOConfig(
+    decoder_ablation_mode='zero'
+)
+```
+
+Implementation:
+
+```python
+# ppo_doom.py:918-924
+def ablate_spike_features_tensor(self, spike_features: torch.Tensor) -> torch.Tensor:
+    mode = getattr(self.config, 'decoder_ablation_mode', 'none')
+    if mode == 'zero':
+        return torch.zeros_like(spike_features)
+    if mode == 'random':
+        return torch.rand_like(spike_features)
+    return spike_features
+```
+
+<Warning>
+With `zero` ablation, you should observe **no learning**. If the agent still improves, the decoder bias or encoder is compensating, which invalidates the claim that neurons are learning.
+</Warning>
+
+### `random`
+
+Replace spike counts with random values sampled uniformly from [0, 1]. This tests whether structured neural responses are necessary, or if any input works.
+
+```python
+config = PPOConfig(
+    decoder_ablation_mode='random'
+)
+```
+
+Used in training:
+
+```python
+# training_server.py --decoder-ablation random
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --decoder-ablation random
+```
+
+<Warning>
+With `random` ablation, learning should be severely impaired or absent. If performance matches real spikes, the decoder is learning a static policy independent of neural input.
+</Warning>
+
+## FAQ: Why Ablations Matter
+
+<Accordion title="Isn't the decoder/PPO doing all the learning?">
+No, this is precisely why there are ablations. The footage you see in the video was taken using a 0-bias full linear readout decoder, meaning that the action selected is a linear function of the output spikes from the CL1; the CL1 is doing the learning. There is a noticeable difference when using the ablation (both random and 0 spikes result in zero learning) versus actual CL1 spikes.
+
+**Source:** README.md FAQ section
+</Accordion>
+
+<Accordion title="Isn't the encoder/PPO doing all the learning?">
+This question largely assumes that the cells are static, which is incorrect; it is not a memory-less "feed X in, get Y" machine. Both the policy and the cells are dynamical systems; biological neurons have an internal state (membrane potential, synaptic weights, adaptation currents). 
+
+The same stimulation delivered at different points in training will produce different spike patterns, because the neurons have been conditioned by prior feedback. During testing, we froze encoder weights and still observed improvements in the reward.
+
+**Source:** README.md FAQ section
+</Accordion>
+
+## Configuration Recommendations
+
+When running ablations, ensure your decoder configuration isolates neural contributions:
+
+```python
+config = PPOConfig(
+    # Ablation mode
+    decoder_ablation_mode='zero',  # or 'random'
+    
+    # Decoder settings to prevent decoder-side learning
+    decoder_zero_bias=True,        # Force bias=0 so actions depend on spikes
+    decoder_use_mlp=False,         # Use linear readout only
+    decoder_enforce_nonnegative=False,
+    decoder_freeze_weights=False,
+    
+    # Regularization (optional)
+    decoder_weight_l2_coef=0.0,
+    decoder_bias_l2_coef=0.0
+)
+```
+
+### Key Settings Explained
+
+**`decoder_zero_bias=True`**
+
+Keeps bias at zero so decoded actions depend solely on encoder output. This helped prevent decoder-sided learning in testing, but may behave differently on actual hardware since the SDK spikes were random. **This should definitely be tested with ablations!**
+
+**`decoder_use_mlp=False`**
+
+Default linear decoder keeps hardware mapping transparent. Enable the MLP when you require richer non-linear policies (expect higher sample complexity; decoder also tends to start becoming a policy head, but this might be due to random spike noise from the SDK).
+
+**Source:** README.md lines 30-32
+
+## Running Ablation Experiments
+
+### 1. Baseline (Real Spikes)
+
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --decoder-ablation none \
+    --max-episodes 1000
+```
+
+### 2. Zero Ablation
+
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --decoder-ablation zero \
+    --max-episodes 1000
+```
+
+### 3. Random Ablation
+
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --decoder-ablation random \
+    --max-episodes 1000
+```
+
+## Interpreting Results
+
+Monitor these TensorBoard metrics across all three conditions:
+
+```bash
+tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+```
+
+### Expected Outcomes
+
+| Metric | Real Spikes | Zero Ablation | Random Ablation |
+|--------|-------------|---------------|------------------|
+| **Episode Reward** | Increasing | Flat/declining | Flat/noisy |
+| **Kill Count** | Increasing | ~0 | ~0 |
+| **Survival Time** | Increasing | Minimal | Minimal |
+| **Decoder/wx_bias_ratio** | High | N/A (bias=0) | N/A |
+
+<Tip>
+If zero/random ablations show learning curves similar to real spikes, investigate:
+- Is `decoder_zero_bias=False`? (Bias may be compensating)
+- Is `decoder_use_mlp=True`? (MLP may be learning a static policy)
+- Is encoder adapting to compensate? (Check encoder entropy metrics)
+</Tip>
+
+## Visualizing Ablation Differences
+
+Use TensorBoard to compare runs side-by-side:
+
+```bash
+tensorboard --logdir_spec \
+    baseline:checkpoints/baseline_none/logs,\
+    zero:checkpoints/ablation_zero/logs,\
+    random:checkpoints/ablation_random/logs
+```
+
+Key plots:
+- `Training/Episode_Reward`
+- `Training/Kill_Count`
+- `Decoder/forward_wx_bias_ratio`
+- `Encoder/freq_mean` and `Encoder/amp_mean`
+
+## Code Reference
+
+Ablation logic is implemented in `ppo_doom.py`:
+
+**Tensor ablation (during training):**
+```python
+# ppo_doom.py:918-924
+def ablate_spike_features_tensor(self, spike_features: torch.Tensor) -> torch.Tensor:
+    mode = getattr(self.config, 'decoder_ablation_mode', 'none')
+    if mode == 'zero':
+        return torch.zeros_like(spike_features)
+    if mode == 'random':
+        return torch.rand_like(spike_features)
+    return spike_features
+```
+
+**NumPy ablation (during rollout collection):**
+```python
+# ppo_doom.py:926-932
+def ablate_spike_features_numpy(self, spike_features: np.ndarray) -> np.ndarray:
+    mode = getattr(self.config, 'decoder_ablation_mode', 'none')
+    if mode == 'zero':
+        return np.zeros_like(spike_features)
+    if mode == 'random':
+        return np.random.rand(*spike_features.shape).astype(spike_features.dtype, copy=False)
+    return spike_features
+```
+
+Default configuration:
+```python
+# ppo_doom.py:271
+decoder_ablation_mode: str = 'none'  # "random" and "zero" are valid inputs
+```

@@ -1,0 +1,102 @@
+---
+title: DOOM Neuron - Train Biological Neurons to Play DOOM
+description: Train biological neurons using reinforcement learning to play DOOM. Combines CL1 hardware with PPO to create adaptive neural controllers.
+---
+
+# Welcome to DOOM Neuron
+
+DOOM Neuron is a groundbreaking AI/ML project that trains **biological neurons** (CL1 hardware) to play DOOM using Proximal Policy Optimization (PPO) reinforcement learning.
+
+<Note>
+This is real biological neural tissue learning to play a video game through electrical stimulation and spike-based feedback.
+</Note>
+
+## What Makes This Special?
+
+Unlike traditional deep learning where silicon computes everything, DOOM Neuron:
+
+- **Uses real biological neurons** (CL1 hardware) for decision-making
+- **Learns through electrical stimulation** converted from game state
+- **Adapts based on spike patterns** from living neural tissue
+- **Combines encoder-decoder architecture** where the CL1 neurons are the core policy
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get a training session running in under 10 minutes with step-by-step setup
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install dependencies, CL SDK, VizDoom, and configure your environment
+  </Card>
+  <Card title="Architecture" icon="brain" href="/concepts/architecture">
+    Understand the encoder-decoder pipeline and how biological neurons learn
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/ppo-config">
+    Tune PPO hyperparameters, feedback settings, and scenario configs
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Game State to Electrical Signals">
+    The **encoder** network converts DOOM observations (position, health, enemies, wall distances) into electrical stimulation parameters (frequency, amplitude, pulses).
+  </Step>
+  
+  <Step title="CL1 Neural Response">
+    Biological neurons on the **CL1 hardware** receive the electrical stimulation and produce spike patterns. The neurons have internal state (membrane potential, synaptic weights, adaptation currents) that evolves during training.
+  </Step>
+  
+  <Step title="Spikes to Actions">
+    The **decoder** network reads the spike counts from CL1 and outputs game actions (move forward/backward, strafe left/right, turn left/right, attack).
+  </Step>
+  
+  <Step title="Reinforcement Learning">
+    **PPO** optimizes the encoder and decoder using rewards (kills, armor pickups, survival). The biological neurons receive direct feedback through additional electrical pulses when positive/negative events occur.
+  </Step>
+</Steps>
+
+## Key Features
+
+### Biological Learning
+The CL1 neurons are **not static**. They are dynamical systems with internal state that changes based on prior stimulation and feedback. During testing, encoder weights were frozen and improvements in reward were still observed, proving the neurons themselves are learning.
+
+### Hybrid Action Spaces
+Supports both hybrid action spaces (separate categorical distributions for movement, camera, attack) and discrete action spaces for maximum flexibility.
+
+### Multiple Scenarios
+- **Progressive Deathmatch**: Survival mode with no ammo reset on kills (encourages resource management)
+- **Survival**: Classic survival gameplay
+- **Deadly Corridor 1-5**: Curriculum learning from easy to benchmark difficulty
+
+### Advanced Feedback System
+Event-specific feedback with surprise scaling:
+- Positive events: enemy kills, armor pickups, approaching targets
+- Negative events: taking damage, wasting ammo, retreating from targets
+- TD error-based surprise modulation increases frequency/amplitude for unexpected events
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="Isn't the decoder/PPO doing all the learning?">
+    No, this is precisely why there are ablations. The footage was taken using a 0-bias full linear readout decoder, meaning that the action selected is a linear function of the output spikes from the CL1; **the CL1 is doing the learning**. There is a noticeable difference when using the ablation (both random and 0 spikes result in zero learning) versus actual CL1 spikes.
+  </Accordion>
+  
+  <Accordion title="Isn't the encoder doing all the learning?">
+    This assumes the cells are static, which is incorrect. Both the policy and the cells are **dynamical systems**. Biological neurons have internal state (membrane potential, synaptic weights, adaptation currents). The same stimulation delivered at different points in training produces different spike patterns because the neurons have been conditioned by prior feedback. During testing, encoder weights were frozen and still observed improvements in reward.
+  </Accordion>
+  
+  <Accordion title="How is DOOM converted to electrical signals?">
+    An **encoder** in the PPO policy dictates the stimulation pattern (frequency, amplitude, pulses, and which channels to stimulate). Because CL1 spikes are non-differentiable, the encoder is trained through PPO policy gradients using the log-likelihood trick (REINFORCE-style), i.e., by including the encoder's sampled stimulation log-probs in the PPO objective rather than backpropagating through spikes.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Get Started Now" icon="play" href="/quickstart">
+    Jump into training with the quickstart guide
+  </Card>
+  <Card title="Deep Dive" icon="book" href="/concepts/architecture">
+    Learn the technical details of the neural architecture
+  </Card>
+</CardGroup>

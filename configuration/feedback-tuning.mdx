@@ -1,0 +1,522 @@
+---
+title: 'Feedback Tuning'
+description: 'Configure feedback stimulation parameters including amplitude, frequency, pulse count, and surprise-based scaling for event-driven neural feedback'
+---
+
+## Overview
+
+The feedback system delivers stimulation to biological neurons in response to game events (kills, damage, pickups). Each event has configurable base parameters and surprise-based scaling that modulates feedback intensity based on temporal difference (TD) errors.
+
+## EventFeedbackConfig
+
+Each event type (enemy kill, took damage, armor pickup, etc.) is configured using the `EventFeedbackConfig` dataclass.
+
+### Base Stimulation Parameters
+
+<ParamField path="channels" type="List[int]" required>
+  List of neural channel indices to stimulate for this event.
+  
+  Channels must be in range 0-63 and not overlap with other event or action channels.
+</ParamField>
+
+<ParamField path="base_frequency" type="float" required>
+  Base stimulation frequency in Hz before surprise scaling.
+  
+  Typical ranges:
+  - Positive events: 20-40 Hz
+  - Negative events: 60-120 Hz
+</ParamField>
+
+<ParamField path="base_amplitude" type="float" required>
+  Base stimulation amplitude in microamperes (μA) before surprise scaling.
+  
+  Typical range: 1.8-2.5 μA
+</ParamField>
+
+<ParamField path="base_pulses" type="int" required>
+  Base number of pulses per feedback burst.
+  
+  Typical ranges:
+  - Quick events: 25-35 pulses
+  - Important events: 40-50 pulses
+</ParamField>
+
+```python
+EventFeedbackConfig(
+    channels=[35, 36, 38],
+    base_frequency=20.0,  # Hz
+    base_amplitude=2.5,   # μA
+    base_pulses=40
+)
+```
+
+### Event Metadata
+
+<ParamField path="info_key" type="str" required>
+  Key name in the environment's info dict that tracks this event.
+  
+  Examples: `'event_enemy_kill'`, `'event_took_damage'`, `'event_armor_pickup'`
+</ParamField>
+
+<ParamField path="td_sign" type="str" default="'positive'">
+  Expected sign of temporal difference error for this event.
+  
+  - `'positive'`: Event represents reward (kills, pickups)
+  - `'negative'`: Event represents punishment (damage, waste)
+  - `'absolute'`: Use absolute value of TD error
+</ParamField>
+
+```python
+EventFeedbackConfig(
+    info_key='event_enemy_kill',
+    td_sign='positive'  # Reward event
+)
+```
+
+### Surprise Scaling Parameters
+
+Feedback intensity scales based on TD error magnitude ("surprise"). Larger unexpected rewards/punishments trigger stronger feedback.
+
+<ParamField path="freq_gain" type="float" default="0.9">
+  Gain coefficient for frequency scaling based on surprise.
+  
+  `scaled_freq = base_freq * (1 + freq_gain * surprise_factor)`
+</ParamField>
+
+<ParamField path="freq_max_scale" type="float" default="2.0">
+  Maximum scaling multiplier for frequency.
+  
+  Frequency is clipped to `[base_freq, base_freq * freq_max_scale]`
+</ParamField>
+
+<ParamField path="amp_gain" type="float" default="0.35">
+  Gain coefficient for amplitude scaling based on surprise.
+  
+  `scaled_amp = base_amp * (1 + amp_gain * surprise_factor)`
+</ParamField>
+
+<ParamField path="amp_max_scale" type="float" default="1.5">
+  Maximum scaling multiplier for amplitude.
+  
+  Amplitude is clipped to `[base_amp, base_amp * amp_max_scale]`
+</ParamField>
+
+<ParamField path="pulse_gain" type="float" default="0.5">
+  Gain coefficient for pulse count scaling based on surprise.
+  
+  `scaled_pulses = base_pulses * (1 + pulse_gain * surprise_factor)`
+</ParamField>
+
+<ParamField path="pulse_max_scale" type="float" default="2.0">
+  Maximum scaling multiplier for pulse count.
+  
+  Pulse count is clipped to `[base_pulses, base_pulses * pulse_max_scale]`
+</ParamField>
+
+```python
+EventFeedbackConfig(
+    base_frequency=20.0,
+    freq_gain=0.20,        # 20% increase per unit surprise
+    freq_max_scale=2.5,    # Max 2.5x frequency (50 Hz max)
+    
+    base_amplitude=2.5,
+    amp_gain=0.20,         # 20% increase per unit surprise
+    amp_max_scale=1.6,     # Max 1.6x amplitude (4.0 μA max)
+    
+    base_pulses=40,
+    pulse_gain=0.20,       # 20% increase per unit surprise
+    pulse_max_scale=2.5    # Max 2.5x pulses (100 pulses max)
+)
+```
+
+### Exponential Moving Average
+
+<ParamField path="ema_beta" type="float" default="0.99">
+  Beta parameter for exponential moving average of surprise magnitude.
+  
+  `surprise_ema = ema_beta * surprise_ema + (1 - ema_beta) * |td_error|`
+  
+  Higher values (closer to 1.0) create slower-moving averages.
+</ParamField>
+
+```python
+EventFeedbackConfig(
+    ema_beta=0.99  # Slow-moving average for surprise normalization
+)
+```
+
+### Unpredictable Stimulation
+
+Some events (like taking damage) can trigger additional unpredictable background stimulation.
+
+<ParamField path="unpredictable" type="bool" default="True">
+  Enable unpredictable background stimulation for this event.
+</ParamField>
+
+<ParamField path="unpredictable_frequency" type="float" default="5.0">
+  Frequency in Hz for unpredictable stimulation bursts.
+</ParamField>
+
+<ParamField path="unpredictable_duration_sec" type="float" default="1.0">
+  Duration in seconds for each unpredictable stimulation burst.
+</ParamField>
+
+<ParamField path="unpredictable_rest_sec" type="float" default="1.0">
+  Rest period in seconds between unpredictable bursts.
+</ParamField>
+
+<ParamField path="unpredictable_channels" type="Optional[List[int]]" default="None">
+  Channels to use for unpredictable stimulation. If `None`, uses same channels as main event.
+</ParamField>
+
+<ParamField path="unpredictable_amplitude" type="Optional[float]" default="None">
+  Amplitude for unpredictable stimulation. If `None`, uses `base_amplitude`.
+</ParamField>
+
+```python
+EventFeedbackConfig(
+    channels=[44, 47, 48],
+    unpredictable=True,
+    unpredictable_frequency=5.0,
+    unpredictable_duration_sec=4.0,
+    unpredictable_rest_sec=4.0,
+    unpredictable_channels=[44, 47, 48],
+    unpredictable_amplitude=2.2
+)
+```
+
+## Default Event Configurations
+
+### Enemy Kill (Positive Event)
+
+```python
+'enemy_kill': EventFeedbackConfig(
+    channels=[35, 36, 38],
+    base_frequency=20.0,      # Moderate frequency
+    base_amplitude=2.5,       # High amplitude for strong signal
+    base_pulses=40,
+    info_key='event_enemy_kill',
+    td_sign='positive',
+    freq_gain=0.20,
+    freq_max_scale=2.5,
+    amp_gain=0.20,
+    amp_max_scale=1.6,
+    pulse_gain=0.20,
+    pulse_max_scale=2.5
+)
+```
+
+### Armor Pickup (Positive Event)
+
+```python
+'armor_pickup': EventFeedbackConfig(
+    channels=[39, 40, 43],
+    base_frequency=20.0,
+    base_amplitude=2.0,       # Moderate amplitude
+    base_pulses=35,
+    info_key='event_armor_pickup',
+    td_sign='positive',
+    freq_gain=0.30,           # Higher frequency sensitivity
+    freq_max_scale=2.0,
+    amp_gain=0.30,
+    amp_max_scale=1.4,
+    pulse_gain=0.30,
+    pulse_max_scale=2.0
+)
+```
+
+### Took Damage (Negative Event)
+
+```python
+'took_damage': EventFeedbackConfig(
+    channels=[44, 47, 48],
+    base_frequency=90.0,      # High frequency for aversive signal
+    base_amplitude=2.2,
+    base_pulses=50,           # Longer duration
+    info_key='event_took_damage',
+    td_sign='negative',
+    freq_gain=0.20,
+    freq_max_scale=2.5,
+    amp_gain=0.18,
+    amp_max_scale=1.7,
+    pulse_gain=0.20,
+    pulse_max_scale=2.5,
+    unpredictable=True,       # Add unpredictable component
+    unpredictable_frequency=5.0,
+    unpredictable_duration_sec=4.0,
+    unpredictable_rest_sec=4.0,
+    unpredictable_channels=[44, 47, 48],
+    unpredictable_amplitude=2.2
+)
+```
+
+### Ammo Waste (Negative Event)
+
+```python
+'ammo_waste': EventFeedbackConfig(
+    channels=[52, 54, 55],
+    base_frequency=60.0,      # Medium-high frequency
+    base_amplitude=1.8,       # Lower amplitude
+    base_pulses=25,           # Shorter duration
+    info_key='event_ammo_waste',
+    td_sign='negative',
+    freq_gain=0.15,           # Lower scaling sensitivity
+    freq_max_scale=1.8,
+    amp_gain=0.15,
+    amp_max_scale=1.3,
+    pulse_gain=0.15,
+    pulse_max_scale=1.8
+)
+```
+
+### Approach Target (Positive Event, ppo_doom.py only)
+
+```python
+'approach_target': EventFeedbackConfig(
+    channels=[5, 6, 11],
+    base_frequency=30.0,
+    base_amplitude=2.4,
+    base_pulses=28,
+    info_key='event_move_closer',
+    td_sign='positive',
+    freq_gain=0.25,
+    freq_max_scale=2.2,
+    amp_gain=0.10,            # Lower amplitude scaling
+    amp_max_scale=1.5,
+    pulse_gain=0.25,
+    pulse_max_scale=2.2
+)
+```
+
+### Retreat from Target (Negative Event, ppo_doom.py only)
+
+```python
+'retreat_target': EventFeedbackConfig(
+    channels=[12, 15, 16],
+    base_frequency=120.0,     # Very high frequency for strong aversion
+    base_amplitude=2.1,
+    base_pulses=32,
+    info_key='event_move_farther',
+    td_sign='negative',
+    freq_gain=0.25,
+    freq_max_scale=2.2,
+    amp_gain=0.10,
+    amp_max_scale=1.5,
+    pulse_gain=0.25,
+    pulse_max_scale=2.2
+)
+```
+
+## Global Feedback Settings
+
+### Reward-Based Feedback
+
+<ParamField path="use_reward_feedback" type="bool" default="True">
+  Enable continuous feedback based on TD error magnitude.
+</ParamField>
+
+<ParamField path="reward_feedback_positive_channels" type="List[int]" default="[19, 20, 22]">
+  Channels for positive TD error feedback.
+</ParamField>
+
+<ParamField path="reward_feedback_negative_channels" type="List[int]" default="[23, 24, 26]">
+  Channels for negative TD error feedback.
+</ParamField>
+
+<ParamField path="feedback_positive_threshold" type="float" default="1.0">
+  TD error threshold for triggering positive feedback.
+</ParamField>
+
+<ParamField path="feedback_negative_threshold" type="float" default="-1.0">
+  TD error threshold for triggering negative feedback.
+</ParamField>
+
+```python
+config = PPOConfig(
+    use_reward_feedback=True,
+    reward_feedback_positive_channels=[19, 20, 22],
+    reward_feedback_negative_channels=[23, 24, 26],
+    feedback_positive_threshold=0.5,   # Lower threshold
+    feedback_negative_threshold=-0.5
+)
+```
+
+### Positive Feedback Parameters
+
+<ParamField path="feedback_positive_amplitude" type="float" default="2.0">
+  Amplitude in μA for positive reward feedback.
+</ParamField>
+
+<ParamField path="feedback_positive_frequency" type="float" default="20.0">
+  Frequency in Hz for positive reward feedback.
+</ParamField>
+
+<ParamField path="feedback_positive_pulses" type="int" default="30">
+  Number of pulses for positive reward feedback.
+</ParamField>
+
+### Negative Feedback Parameters
+
+<ParamField path="feedback_negative_amplitude" type="float" default="2.0">
+  Amplitude in μA for negative reward feedback.
+</ParamField>
+
+<ParamField path="feedback_negative_frequency" type="float" default="60.0">
+  Frequency in Hz for negative reward feedback (higher than positive).
+</ParamField>
+
+<ParamField path="feedback_negative_pulses" type="int" default="90">
+  Number of pulses for negative reward feedback (longer than positive).
+</ParamField>
+
+```python
+config = PPOConfig(
+    feedback_positive_amplitude=2.5,
+    feedback_positive_frequency=25.0,
+    feedback_positive_pulses=40,
+    feedback_negative_amplitude=2.2,
+    feedback_negative_frequency=80.0,
+    feedback_negative_pulses=100
+)
+```
+
+### Episode-Level Feedback
+
+<ParamField path="use_episode_feedback" type="bool" default="True">
+  Enable episode-end feedback stimulation. Only available in training_server.py.
+</ParamField>
+
+<ParamField path="episode_only_feedback" type="bool" default="False">
+  If `True`, disable step-level feedback and only provide episode-end feedback.
+</ParamField>
+
+<ParamField path="episode_feedback_surprise_scaling" type="bool" default="True">
+  Scale episode feedback by surprise magnitude. Only available in training_server.py.
+</ParamField>
+
+<ParamField path="feedback_episode_positive_pulses" type="int" default="80">
+  Pulses for positive episode-end feedback.
+</ParamField>
+
+<ParamField path="feedback_episode_positive_frequency" type="float" default="40.0">
+  Frequency for positive episode-end feedback.
+</ParamField>
+
+<ParamField path="feedback_episode_negative_pulses" type="int" default="160">
+  Pulses for negative episode-end feedback.
+</ParamField>
+
+<ParamField path="feedback_episode_negative_frequency" type="float" default="120.0">
+  Frequency for negative episode-end feedback.
+</ParamField>
+
+```python
+config = PPOConfig(
+    use_episode_feedback=True,
+    episode_only_feedback=False,
+    episode_feedback_surprise_scaling=True,
+    feedback_episode_positive_pulses=100,
+    feedback_episode_positive_frequency=50.0,
+    feedback_episode_negative_pulses=200,
+    feedback_episode_negative_frequency=150.0
+)
+```
+
+### Global Surprise Scaling
+
+<ParamField path="feedback_surprise_gain" type="float" default="0.25">
+  Global gain for surprise-based feedback scaling.
+  
+  <Note>
+  Code comment: "Tune as needed, will depend on neurons"
+  </Note>
+</ParamField>
+
+<ParamField path="feedback_surprise_max_scale" type="float" default="2.0">
+  Maximum global surprise scaling multiplier.
+</ParamField>
+
+<ParamField path="feedback_surprise_freq_gain" type="Optional[float]" default="0.65">
+  Frequency-specific surprise gain (overrides `feedback_surprise_gain` for frequency).
+</ParamField>
+
+<ParamField path="feedback_surprise_amp_gain" type="Optional[float]" default="0.35">
+  Amplitude-specific surprise gain.
+</ParamField>
+
+<ParamField path="feedback_surprise_freq_max_scale" type="Optional[float]" default="2.0">
+  Frequency-specific max scaling.
+</ParamField>
+
+<ParamField path="feedback_surprise_amp_max_scale" type="Optional[float]" default="1.5">
+  Amplitude-specific max scaling.
+</ParamField>
+
+```python
+config = PPOConfig(
+    feedback_surprise_gain=0.30,
+    feedback_surprise_max_scale=2.5,
+    feedback_surprise_freq_gain=0.70,
+    feedback_surprise_amp_gain=0.40,
+    feedback_surprise_freq_max_scale=2.5,
+    feedback_surprise_amp_max_scale=1.8
+)
+```
+
+## Example: Custom Event Feedback
+
+```python
+from dataclasses import replace
+
+config = PPOConfig(
+    event_feedback_settings={
+        # Custom enemy kill with stronger feedback
+        'enemy_kill': EventFeedbackConfig(
+            channels=[35, 36, 38],
+            base_frequency=30.0,      # Higher base frequency
+            base_amplitude=3.0,       # Higher amplitude
+            base_pulses=60,           # More pulses
+            info_key='event_enemy_kill',
+            td_sign='positive',
+            freq_gain=0.40,           # More sensitive scaling
+            freq_max_scale=3.0,
+            amp_gain=0.40,
+            amp_max_scale=2.0,
+            pulse_gain=0.40,
+            pulse_max_scale=3.0
+        ),
+        # Keep default damage feedback
+        'took_damage': EventFeedbackConfig(
+            channels=[44, 47, 48],
+            base_frequency=90.0,
+            base_amplitude=2.2,
+            base_pulses=50,
+            info_key='event_took_damage',
+            td_sign='negative',
+            freq_gain=0.20,
+            freq_max_scale=2.5,
+            amp_gain=0.18,
+            amp_max_scale=1.7,
+            pulse_gain=0.20,
+            pulse_max_scale=2.5,
+            unpredictable=True,
+            unpredictable_frequency=5.0,
+            unpredictable_duration_sec=4.0,
+            unpredictable_rest_sec=4.0,
+            unpredictable_channels=[44, 47, 48],
+            unpredictable_amplitude=2.2
+        )
+    }
+)
+```
+
+## Related Configuration
+
+<CardGroup cols={2}>
+  <Card title="PPO Hyperparameters" icon="chart-line" href="/configuration/ppo-config">
+    Learning rate and training settings
+  </Card>
+  <Card title="Encoder/Decoder" icon="brain" href="/configuration/encoder-decoder">
+    Network architecture configuration
+  </Card>
+</CardGroup>

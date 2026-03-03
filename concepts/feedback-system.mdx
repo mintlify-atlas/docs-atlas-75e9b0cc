@@ -1,0 +1,594 @@
+---
+title: Feedback System
+description: How surprise-scaled feedback mechanisms provide additional learning signals through dedicated reward channels
+---
+
+## Overview
+
+Beyond the encoder-decoder loop, the DOOM Neuron system provides **event-based feedback stimulation** to biological neurons. This feedback acts as an auxiliary teaching signal, delivering reward/punishment information through dedicated neural channels based on game events and temporal-difference (TD) prediction errors.
+
+## Feedback Architecture
+
+The feedback system operates in parallel to the main encoder-decoder loop:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Training System                      │
+│                                                         │
+│  Game Events ──▶ Surprise Calculation ──▶ Feedback     │
+│  (kills, damage)  (TD error scaling)     Commands      │
+│                                                         │
+│                           │                             │
+│                           ▼                             │
+│                    UDP Feedback Port                    │
+│                       (12348)                           │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            │ UDP packets
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                      CL1 Device                         │
+│                                                         │
+│                  Feedback Socket                        │
+│                         │                               │
+│                         ▼                               │
+│           apply_feedback_command()                      │
+│                         │                               │
+│         ┌───────────────┼───────────────┐               │
+│         ▼               ▼               ▼               │
+│   Reward Channels  Event Channels  Interrupt           │
+│   [19, 20, 22]    [35, 36, 38]    (stop stim)          │
+│   [23, 24, 26]    [44, 47, 48]                          │
+│                   [39, 40, 43]                          │
+│                   [52, 54, 55]                          │
+│                   [5, 6, 11]                            │
+│                   [12, 15, 16]                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Feedback Channel Types
+
+### Reward Feedback Channels
+
+Dedicated channels for general positive/negative reward signals:
+
+```python
+# From PPOConfig in training_server.py:182-183
+reward_feedback_positive_channels = [19, 20, 22]  # 3 channels
+reward_feedback_negative_channels = [23, 24, 26]  # 3 channels
+```
+
+**Purpose**: Provide binary reward/punishment feedback based on step-level rewards:
+
+```python
+if reward > feedback_positive_threshold:  # Default: +1
+    # Stimulate positive reward channels
+    send_feedback(channels=[19, 20, 22], frequency=20Hz, amplitude=2.0μA)
+elif reward < feedback_negative_threshold:  # Default: -1  
+    # Stimulate negative reward channels
+    send_feedback(channels=[23, 24, 26], frequency=60Hz, amplitude=2.0μA)
+```
+
+<Note>
+Reward feedback channels are separate from encoding/action channels to avoid confounding the encoder-decoder learning. The decoder doesn't read from these channels.
+</Note>
+
+### Event Feedback Channels
+
+Dedicated channels for specific game events with surprise-based scaling:
+
+```python
+# From PPOConfig.event_feedback_settings in training_server.py:185-249
+event_feedback_settings = {
+    'enemy_kill': EventFeedbackConfig(
+        channels=[35, 36, 38],
+        base_frequency=20.0,
+        base_amplitude=2.5,
+        base_pulses=40,
+        info_key='event_enemy_kill',
+        td_sign='positive',  # Reward event
+        freq_gain=0.20,
+        freq_max_scale=2.5,
+    ),
+    'took_damage': EventFeedbackConfig(
+        channels=[44, 47, 48],
+        base_frequency=90.0,
+        base_amplitude=2.2,
+        base_pulses=50,
+        info_key='event_took_damage',
+        td_sign='negative',  # Punishment event
+        unpredictable=True,  # Enable unpredictable stimulation
+        unpredictable_frequency=5.0,
+        unpredictable_duration_sec=4.0,
+    ),
+    'armor_pickup': EventFeedbackConfig(
+        channels=[39, 40, 43],
+        base_frequency=20.0,
+        base_amplitude=2.0,
+        base_pulses=35,
+        td_sign='positive',
+    ),
+    # ... more events ...
+}
+```
+
+**Event Types**:
+
+<Accordion title="All Event Feedback Channels">
+
+**Positive Events** (Rewards):
+- **enemy_kill** [35, 36, 38]: Agent eliminates an enemy
+- **armor_pickup** [39, 40, 43]: Agent collects armor item
+- **approach_target** [5, 6, 11]: Agent moves closer to enemy
+
+**Negative Events** (Punishments):
+- **took_damage** [44, 47, 48]: Agent receives damage
+- **ammo_waste** [52, 54, 55]: Agent shoots without hitting
+- **retreat_target** [12, 15, 16]: Agent moves away from enemy
+
+</Accordion>
+
+## Surprise Scaling
+
+### Temporal-Difference (TD) Error
+
+Feedback intensity is modulated by **surprise** - how unexpected the event was:
+
+```python
+# Conceptual implementation
+td_error = reward + gamma * next_value - current_value
+
+# For positive events (kills, armor)
+if td_sign == 'positive':
+    surprise = max(0, td_error)  # Positive surprise only
+
+# For negative events (damage, ammo waste)
+elif td_sign == 'negative':
+    surprise = max(0, -td_error)  # Negative surprise (unexpected bad outcome)
+
+# For magnitude-based scaling
+elif td_sign == 'absolute':
+    surprise = abs(td_error)
+```
+
+<Info>
+**TD error** measures prediction error:
+- **Positive TD**: Event better than expected (surprising reward)
+- **Negative TD**: Event worse than expected (surprising punishment)
+- **Zero TD**: Event perfectly predicted (no surprise)
+
+By scaling feedback with TD error, the system emphasizes **unexpected outcomes** that provide the most learning value.
+</Info>
+
+### Surprise-Scaled Parameters
+
+Feedback stimulation parameters scale with surprise magnitude:
+
+```python
+# From EventFeedbackConfig fields
+class EventFeedbackConfig:
+    # Base parameters (used when surprise = 0)
+    base_frequency: float = 20.0    # Hz
+    base_amplitude: float = 2.5     # μA
+    base_pulses: int = 40           # Number of pulses
+    
+    # Surprise scaling gains
+    freq_gain: float = 0.20         # How much surprise affects frequency
+    amp_gain: float = 0.20          # How much surprise affects amplitude  
+    pulse_gain: float = 0.20        # How much surprise affects pulse count
+    
+    # Maximum scaling factors
+    freq_max_scale: float = 2.5     # Max frequency multiplier
+    amp_max_scale: float = 1.6      # Max amplitude multiplier
+    pulse_max_scale: float = 2.5    # Max pulse count multiplier
+
+# Scaling computation
+freq_scale = 1.0 + min(freq_gain * surprise, freq_max_scale - 1.0)
+amp_scale = 1.0 + min(amp_gain * surprise, amp_max_scale - 1.0)
+pulse_scale = 1.0 + min(pulse_gain * surprise, pulse_max_scale - 1.0)
+
+final_frequency = base_frequency * freq_scale
+final_amplitude = base_amplitude * amp_scale
+final_pulses = int(base_pulses * pulse_scale)
+```
+
+**Example**: Enemy kill with high surprise
+
+```python
+# Low surprise (kill was expected)
+td_error = 0.5
+frequency = 20.0 * (1.0 + 0.20 * 0.5) = 22.0 Hz
+amplitude = 2.5 * (1.0 + 0.20 * 0.5) = 2.75 μA
+pulses = 40 * (1.0 + 0.20 * 0.5) = 44
+
+# High surprise (unexpected kill)
+td_error = 8.0
+frequency = 20.0 * (1.0 + min(0.20 * 8.0, 1.5)) = 20.0 * 2.5 = 50.0 Hz
+amplitude = 2.5 * (1.0 + min(0.20 * 8.0, 0.6)) = 2.5 * 1.6 = 4.0 μA
+pulses = 40 * (1.0 + min(0.20 * 8.0, 1.5)) = 40 * 2.5 = 100
+```
+
+<Tip>
+Surprise scaling acts as a natural curriculum: Early in training, most events are surprising (high TD errors), producing strong feedback. As the value function improves, only genuinely unexpected events trigger strong feedback.
+</Tip>
+
+### Exponential Moving Average (EMA)
+
+To stabilize surprise estimates, TD errors are smoothed over time:
+
+```python
+# From EventFeedbackConfig
+ema_beta: float = 0.99  # Smoothing factor
+
+# Update formula
+ema_td_error = ema_beta * ema_td_error + (1 - ema_beta) * current_td_error
+
+surprise = abs(ema_td_error)
+```
+
+EMA prevents single outlier TD errors from dominating feedback:
+- `ema_beta = 0.99`: Heavy smoothing, slow adaptation
+- `ema_beta = 0.90`: Faster adaptation to changing predictions
+
+## Unpredictable Stimulation
+
+### Damage Aversion Learning
+
+Certain negative events (like taking damage) use **unpredictable stimulation** to create aversion:
+
+```python
+# From EventFeedbackConfig for 'took_damage'
+unpredictable: bool = True
+unpredictable_frequency: float = 5.0      # Hz (low frequency, irregular)
+unpredictable_duration_sec: float = 4.0  # 4 seconds of stimulation
+unpredictable_rest_sec: float = 4.0      # 4 seconds rest
+unpredictable_channels: List[int] = [44, 47, 48]
+unpredictable_amplitude: float = 2.2     # μA
+```
+
+**Purpose**: Create persistent, uncomfortable stimulation that the agent learns to avoid.
+
+**Mechanism**:
+1. Agent takes damage
+2. Trigger unpredictable stimulation on damage channels
+3. Low-frequency (5 Hz) irregular pulses for 4 seconds
+4. Rest for 4 seconds
+5. Repeat pattern if damage continues
+
+<Note>
+Unpredictable stimulation differs from regular feedback:
+- **Duration**: Lasts seconds, not milliseconds
+- **Pattern**: Irregular, low-frequency (harder for neurons to adapt)
+- **Channels**: Same as event feedback but with different parameters
+- **Goal**: Aversion learning, not just event signaling
+</Note>
+
+## Feedback Command Protocol
+
+### UDP Packet Format
+
+```python
+# From udp_protocol.py:235-309
+def pack_feedback_command(
+    feedback_type: str,        # "interrupt", "event", or "reward"
+    channels: List[int],       # Channel numbers to stimulate
+    frequency: int,            # Hz
+    amplitude: float,          # μA
+    pulses: int,               # Number of pulses
+    unpredictable: bool,       # Unpredictable stimulation flag
+    event_name: str            # Event identifier
+) -> bytes:
+    # Returns 120-byte binary packet
+```
+
+**Packet Structure** (120 bytes total):
+```
+[8 bytes]  timestamp (microseconds)
+[1 byte]   feedback_type (0=interrupt, 1=event, 2=reward)
+[1 byte]   num_channels
+[64 bytes] channel array (0xFF padding for unused)
+[4 bytes]  frequency (int)
+[4 bytes]  amplitude (float)
+[4 bytes]  pulses (int)
+[1 byte]   unpredictable flag (0 or 1)
+[32 bytes] event_name (null-padded string)
+[1 byte]   padding
+```
+
+### Feedback Types
+
+<Accordion title="Feedback Command Types">
+
+**Type 0: Interrupt**
+```python
+feedback_type = "interrupt"
+channels = [19, 20, 22, 23, 24, 26]  # All reward channels
+frequency = 0
+amplitude = 0
+pulses = 0
+```
+Stops ongoing stimulation on specified channels. Used to clear feedback before new events.
+
+**Type 1: Event Feedback**
+```python
+feedback_type = "event"
+channels = [35, 36, 38]  # Enemy kill channels
+frequency = 50  # Hz (surprise-scaled)
+amplitude = 4.0  # μA (surprise-scaled)
+pulses = 100  # (surprise-scaled)
+event_name = "enemy_kill"
+```
+Delivers event-specific feedback with surprise scaling.
+
+**Type 2: Reward Feedback**
+```python
+feedback_type = "reward"
+channels = [19, 20, 22]  # Positive reward channels
+frequency = 20  # Hz
+amplitude = 2.0  # μA
+pulses = 30
+event_name = "positive_reward"
+```
+Delivers binary reward/punishment signals based on step rewards.
+
+</Accordion>
+
+## CL1 Feedback Application
+
+### Applying Feedback to Hardware
+
+```python
+# From cl1_neural_interface.py:238-290
+def apply_feedback_command(
+    self,
+    neurons: cl.Neurons,
+    feedback_type: str,
+    channels: list,
+    frequency: int,
+    amplitude: float,
+    pulses: int,
+    unpredictable: bool,
+    event_name: str
+):
+    """Apply feedback stimulation to neural hardware."""
+    
+    # Handle interrupt command
+    if feedback_type == "interrupt":
+        if channels:
+            channel_set = cl.ChannelSet(*channels)
+            neurons.interrupt(channel_set)
+        return
+    
+    # Skip invalid parameters
+    if not channels or frequency <= 0 or amplitude <= 0:
+        return
+    
+    # Create channel set
+    channel_set = cl.ChannelSet(*channels)
+    
+    # Create stimulation design (cached)
+    cache_key = (feedback_type, tuple(channels), frequency, round(amplitude, 4))
+    
+    def _factory():
+        stim_design = cl.StimDesign(
+            phase1_duration=120,
+            phase1_amplitude=-amplitude,
+            phase2_duration=120,
+            phase2_amplitude=amplitude
+        )
+        burst_design = cl.BurstDesign(pulses, frequency)
+        return (stim_design, burst_design)
+    
+    stim_design, burst_design = self._stim_cache.get_or_set(cache_key, _factory)
+    
+    # Apply stimulation
+    neurons.stim(channel_set, stim_design, burst_design)
+    self.feedback_commands_received += 1
+```
+
+**Key Points**:
+1. Interrupt commands clear ongoing feedback
+2. Event/reward feedback uses same biphasic pulse design as encoder
+3. Stimulation designs are cached (LRU, maxsize=2048)
+4. Non-blocking socket prevents loop stalls
+
+## Feedback Timing
+
+### Step-Level Feedback
+
+Reward feedback is sent **after each environment step**:
+
+```python
+# In training loop
+for step in range(steps_per_update):
+    # ... encoder, stimulation, spike collection, action ...
+    
+    reward, done, info = env.step(actions)
+    
+    # Send reward feedback
+    if use_reward_feedback and not episode_only_feedback:
+        if reward > feedback_positive_threshold:
+            send_feedback_command(
+                type="reward",
+                channels=reward_feedback_positive_channels,
+                frequency=feedback_positive_frequency,
+                amplitude=feedback_positive_amplitude,
+                pulses=feedback_positive_pulses
+            )
+        elif reward < feedback_negative_threshold:
+            send_feedback_command(
+                type="reward",
+                channels=reward_feedback_negative_channels,
+                frequency=feedback_negative_frequency,
+                amplitude=feedback_negative_amplitude,
+                pulses=feedback_negative_pulses
+            )
+```
+
+### Event-Level Feedback
+
+Event feedback is sent when specific events occur:
+
+```python
+# Check for events
+for event_name, event_config in event_feedback_settings.items():
+    if info[event_config.info_key] > 0:  # Event occurred
+        # Compute surprise
+        td_error = compute_td_error(reward, value, next_value)
+        surprise = scale_surprise(td_error, event_config)
+        
+        # Scale feedback parameters
+        freq = event_config.base_frequency * (1 + surprise * event_config.freq_gain)
+        amp = event_config.base_amplitude * (1 + surprise * event_config.amp_gain)
+        pulses = int(event_config.base_pulses * (1 + surprise * event_config.pulse_gain))
+        
+        # Send feedback
+        send_feedback_command(
+            type="event",
+            channels=event_config.channels,
+            frequency=freq,
+            amplitude=amp,
+            pulses=pulses,
+            unpredictable=event_config.unpredictable,
+            event_name=event_name
+        )
+```
+
+### Episode-Level Feedback
+
+Optional feedback at episode end based on total episode performance:
+
+```python
+if use_episode_feedback and done:
+    if total_episode_reward > 0:
+        # Positive episode outcome
+        send_feedback_command(
+            type="event",
+            channels=event_feedback_settings['enemy_kill'].channels,
+            frequency=feedback_episode_positive_frequency,
+            amplitude=feedback_positive_amplitude,
+            pulses=feedback_episode_positive_pulses
+        )
+    else:
+        # Negative episode outcome
+        send_feedback_command(
+            type="event",
+            channels=event_feedback_settings['took_damage'].channels,
+            frequency=feedback_episode_negative_frequency,
+            amplitude=feedback_negative_amplitude,
+            pulses=feedback_episode_negative_pulses
+        )
+```
+
+## Configuration
+
+### Feedback Parameters
+
+```python
+# From PPOConfig in training_server.py
+
+# General feedback settings
+use_reward_feedback: bool = True
+use_episode_feedback: bool = True
+episode_only_feedback: bool = False  # If True, skip step-level feedback
+episode_feedback_surprise_scaling: bool = True
+
+# Reward feedback thresholds
+feedback_positive_threshold: float = 1.0
+feedback_negative_threshold: float = -1.0
+
+# Step-level reward feedback
+feedback_positive_frequency: float = 20.0   # Hz
+feedback_positive_amplitude: float = 2.0    # μA
+feedback_positive_pulses: int = 30
+
+feedback_negative_frequency: float = 60.0   # Hz
+feedback_negative_amplitude: float = 2.0    # μA
+feedback_negative_pulses: int = 90
+
+# Episode-level feedback
+feedback_episode_positive_frequency: float = 40.0
+feedback_episode_positive_pulses: int = 80
+
+feedback_episode_negative_frequency: float = 120.0
+feedback_episode_negative_pulses: int = 160
+
+# Surprise scaling
+feedback_surprise_gain: float = 0.25
+feedback_surprise_max_scale: float = 2.0
+feedback_surprise_freq_gain: float = 0.65
+feedback_surprise_amp_gain: float = 0.35
+```
+
+<Tip>
+Start with conservative feedback parameters (low amplitude, low pulse counts) and gradually increase if neurons don't respond. Excessive feedback can cause adaptation or desensitization.
+</Tip>
+
+## Design Rationale
+
+### Why Separate Feedback Channels?
+
+1. **Avoid Confounding**: Encoder-decoder loop learns from spike responses without reward information leaking in
+2. **Clear Attribution**: Feedback channels explicitly signal reward, not game state
+3. **Biological Plausibility**: Mimics reward pathways (dopamine, etc.) separate from sensory processing
+4. **Debugging**: Can disable feedback without affecting encoder-decoder functionality
+
+### Why Surprise Scaling?
+
+1. **Learning Efficiency**: Focus neural resources on unexpected events
+2. **Curriculum Learning**: Automatic adjustment as value function improves
+3. **Biological Relevance**: Mimics prediction error signals in animal brains
+4. **Sample Efficiency**: Strong feedback when it matters most
+
+### Why Unpredictable Stimulation?
+
+1. **Aversion Learning**: Irregular patterns harder to adapt to, maintaining discomfort
+2. **Safety Incentive**: Encourages damage avoidance behaviors
+3. **Biological Realism**: Pain responses in animals are persistent and irregular
+
+## Monitoring Feedback
+
+The CL1 interface logs feedback commands:
+
+```python
+# From cl1_neural_interface.py:454-455
+if self.feedback_commands_received <= 5:
+    print(f"[FEEDBACK] {feedback_type} on {len(channels)} channels: "
+          f"{frequency}Hz, {amplitude}μA, {pulses} pulses ({event_name})")
+```
+
+**Statistics**:
+```
+Stats: 1000 ticks | 
+       Recv: 10.0 pkt/s | 
+       Send: 10.0 pkt/s | 
+       Events: 15 | 
+       Feedback: 42 | 
+       Avg spikes: 12.34/tick
+```
+
+- **Events**: Episode metadata logged
+- **Feedback**: Total feedback commands processed
+- **Avg spikes**: Overall neural activity level
+
+## Future Directions
+
+<Accordion title="Potential Enhancements">
+
+**Adaptive Feedback Scaling**
+- Automatically tune `base_amplitude` and `base_frequency` based on neural response
+- Detect and compensate for neural adaptation over time
+
+**Multi-Modal Feedback**
+- Combine frequency/amplitude/pulse count scaling
+- Explore temporal patterns (bursts, ramps)
+
+**Channel-Specific Learning**
+- Learn which channels are most effective for reward signaling
+- Adaptively allocate feedback across channel subsets
+
+**Closed-Loop Feedback**
+- Adjust feedback based on decoder confidence
+- Reduce feedback when decoder is certain, increase when uncertain
+
+</Accordion>

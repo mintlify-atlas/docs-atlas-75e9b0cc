@@ -1,0 +1,455 @@
+---
+title: PPOConfig Reference
+description: Complete configuration dataclass for PPO training and neural interface parameters in DOOM Neuron
+---
+
+# PPOConfig
+
+The `PPOConfig` dataclass defines all configuration parameters for PPO reinforcement learning training and the CL1 neural hardware interface.
+
+## Environment Configuration
+
+<ParamField path="doom_config" type="str" default="progressive_deathmatch.cfg">
+  Path to the VizDoom configuration file that defines the game scenario
+</ParamField>
+
+<ParamField path="screen_resolution" type="str" default="RES_320X240">
+  Screen resolution for the DOOM game buffer. Valid values are VizDoom resolution constants like `RES_320X240`, `RES_640X480`
+</ParamField>
+
+<ParamField path="use_screen_buffer" type="bool" default="true">
+  Whether to enable the screen buffer for visual observations
+</ParamField>
+
+<ParamField path="max_turn_delta" type="float" default="360.0">
+  Maximum absolute degrees for TURN_LEFT_RIGHT_DELTA action
+</ParamField>
+
+<ParamField path="turn_step_degrees" type="float" default="30.0">
+  Discrete turn step size in degrees when using turn buttons
+</ParamField>
+
+<ParamField path="camera_std_init" type="float" default="3.0">
+  Initial standard deviation (in degrees) for camera delta distribution
+</ParamField>
+
+<ParamField path="use_discrete_action_set" type="bool" default="false">
+  Toggle for single categorical action space vs. combinatorial action space
+</ParamField>
+
+## Neural Interface - Channel Configuration
+
+<ParamField path="num_channels" type="int" default="64">
+  Total number of channels available on the CL1 hardware
+</ParamField>
+
+<ParamField path="encoding_channels" type="List[int]" default="[8, 9, 10, 17, 18, 25, 27, 28, 57]">
+  Channel indices used for encoding game state into stimulation patterns
+</ParamField>
+
+<ParamField path="move_forward_channels" type="List[int]" default="[41, 42, 49]">
+  Channel indices that decode to forward movement actions
+</ParamField>
+
+<ParamField path="move_backward_channels" type="List[int]" default="[50, 51, 58]">
+  Channel indices that decode to backward movement actions
+</ParamField>
+
+<ParamField path="move_left_channels" type="List[int]" default="[13, 14, 21]">
+  Channel indices that decode to strafe left actions
+</ParamField>
+
+<ParamField path="move_right_channels" type="List[int]" default="[45, 46, 53]">
+  Channel indices that decode to strafe right actions
+</ParamField>
+
+<ParamField path="turn_left_channels" type="List[int]" default="[29, 30, 31, 37]">
+  Channel indices that decode to turn left actions
+</ParamField>
+
+<ParamField path="turn_right_channels" type="List[int]" default="[59, 60, 61, 62]">
+  Channel indices that decode to turn right actions
+</ParamField>
+
+<ParamField path="attack_channels" type="List[int]" default="[32, 33, 34]">
+  Channel indices that decode to attack/fire actions
+</ParamField>
+
+## Stimulation Design Parameters
+
+Parameters used to construct `cl.StimDesign` objects for biphasic electrical stimulation.
+
+<ParamField path="phase1_duration" type="float" default="160.0">
+  Duration of the first (negative) phase in microseconds (μs)
+</ParamField>
+
+<ParamField path="phase2_duration" type="float" default="160.0">
+  Duration of the second (positive) phase in microseconds (μs)
+</ParamField>
+
+<ParamField path="min_amplitude" type="float" default="1.0">
+  Minimum stimulation amplitude in microamps (μA). Used as the magnitude for phase1 (negative)
+</ParamField>
+
+<ParamField path="max_amplitude" type="float" default="2.5">
+  Maximum stimulation amplitude in microamps (μA). Used as the magnitude for phase2 (positive)
+</ParamField>
+
+## Burst Design Parameters
+
+Parameters used to construct `cl.BurstDesign` objects that define stimulation frequency and duration.
+
+<ParamField path="min_frequency" type="float" default="4.0">
+  Minimum burst frequency in Hertz (Hz)
+</ParamField>
+
+<ParamField path="max_frequency" type="float" default="40.0">
+  Maximum burst frequency in Hertz (Hz)
+</ParamField>
+
+<ParamField path="burst_count" type="int" default="500">
+  Number of pulses per burst. Set to 500 to ensure stimulation lasts between game ticks
+</ParamField>
+
+## PPO Hyperparameters
+
+<ParamField path="learning_rate" type="float" default="3e-4">
+  Learning rate for the Adam optimizer
+</ParamField>
+
+<ParamField path="gamma" type="float" default="0.99">
+  Discount factor for future rewards
+</ParamField>
+
+<ParamField path="gae_lambda" type="float" default="0.95">
+  Lambda parameter for Generalized Advantage Estimation (GAE)
+</ParamField>
+
+<ParamField path="clip_epsilon" type="float" default="0.2">
+  Clipping parameter for PPO policy updates
+</ParamField>
+
+<ParamField path="value_loss_coef" type="float" default="0.3">
+  Coefficient for value function loss in the total loss
+</ParamField>
+
+<ParamField path="entropy_coef" type="float" default="0.02">
+  Coefficient for entropy bonus to encourage exploration
+</ParamField>
+
+<ParamField path="max_grad_norm" type="float" default="3">
+  Maximum gradient norm for gradient clipping. Can be reduced to 1 or 0.5 for more conservative updates
+</ParamField>
+
+<ParamField path="normalize_returns" type="bool" default="true">
+  Whether to normalize returns for critic training. Stabilizes the critic but may affect learning dynamics
+</ParamField>
+
+## Training Configuration
+
+<ParamField path="num_envs" type="int" default="1">
+  Number of parallel environments to run
+</ParamField>
+
+<ParamField path="steps_per_update" type="int" default="2048">
+  Number of environment steps to collect per policy update (per environment)
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="256">
+  Minibatch size for PPO updates
+</ParamField>
+
+<ParamField path="num_epochs" type="int" default="4">
+  Number of epochs to train on each batch of collected experience
+</ParamField>
+
+<ParamField path="max_episodes" type="int" default="2000">
+  Maximum number of episodes to train for
+</ParamField>
+
+<ParamField path="use_hardware" type="bool" default="true">
+  Whether to use CL1 hardware or run in simulation mode
+</ParamField>
+
+## Network Architecture
+
+<ParamField path="hidden_size" type="int" default="128">
+  Hidden layer size for encoder, decoder, and value networks
+</ParamField>
+
+## Logging and Checkpointing
+
+<ParamField path="log_dir" type="str" default="checkpoints/l5_2048_rand/logs">
+  Directory for TensorBoard logs
+</ParamField>
+
+<ParamField path="checkpoint_dir" type="str" default="checkpoints/l5_2048_rand">
+  Directory for saving model checkpoints
+</ParamField>
+
+<ParamField path="save_interval" type="int" default="100">
+  Save checkpoint every N episodes
+</ParamField>
+
+<ParamField path="eval_interval" type="int" default="50">
+  Evaluate policy every N episodes
+</ParamField>
+
+## Reward Shaping
+
+<ParamField path="feedback_positive_threshold" type="float" default="1">
+  Reward threshold above which positive feedback is triggered. Requires tuning
+</ParamField>
+
+<ParamField path="feedback_negative_threshold" type="float" default="-1">
+  Reward threshold below which negative feedback is triggered. Requires tuning
+</ParamField>
+
+<ParamField path="armor_terminal_reward" type="float" default="1000.0">
+  Terminal reward bonus for armor-related objectives. Requires tuning
+</ParamField>
+
+<ParamField path="aim_alignment_gain" type="float" default="2.5">
+  Gain multiplier for aim alignment reward shaping
+</ParamField>
+
+<ParamField path="aim_alignment_max_distance" type="float" default="250.0">
+  Maximum distance at which aim alignment reward is computed
+</ParamField>
+
+<ParamField path="aim_alignment_bonus" type="float" default="2.5">
+  Bonus reward for accurate aim alignment
+</ParamField>
+
+<ParamField path="aim_alignment_bonus_deg" type="float" default="4.0">
+  Angle threshold in degrees for aim alignment bonus
+</ParamField>
+
+<ParamField path="movement_velocity_reward_scale" type="float" default="0.01">
+  Scaling factor for movement velocity rewards
+</ParamField>
+
+<ParamField path="simplified_reward" type="bool" default="true">
+  Use simplified reward function. When false, factors in manually shaped aim alignment and velocity rewards
+</ParamField>
+
+## Feedback Stimulation - Step-level Rewards
+
+<ParamField path="feedback_positive_amplitude" type="float" default="2.0">
+  Stimulation amplitude (μA) for positive step-level feedback
+</ParamField>
+
+<ParamField path="feedback_positive_frequency" type="float" default="20.0">
+  Stimulation frequency (Hz) for positive step-level feedback
+</ParamField>
+
+<ParamField path="feedback_positive_pulses" type="int" default="30">
+  Number of pulses for positive step-level feedback
+</ParamField>
+
+<ParamField path="feedback_negative_amplitude" type="float" default="2.0">
+  Stimulation amplitude (μA) for negative step-level feedback
+</ParamField>
+
+<ParamField path="feedback_negative_frequency" type="float" default="60.0">
+  Stimulation frequency (Hz) for negative step-level feedback
+</ParamField>
+
+<ParamField path="feedback_negative_pulses" type="int" default="90">
+  Number of pulses for negative step-level feedback
+</ParamField>
+
+## Feedback Stimulation - Episode-level Rewards
+
+<ParamField path="feedback_episode_positive_pulses" type="int" default="80">
+  Number of pulses for positive episode-level feedback
+</ParamField>
+
+<ParamField path="feedback_episode_positive_frequency" type="float" default="40.0">
+  Stimulation frequency (Hz) for positive episode-level feedback
+</ParamField>
+
+<ParamField path="feedback_episode_negative_pulses" type="int" default="160">
+  Number of pulses for negative episode-level feedback
+</ParamField>
+
+<ParamField path="feedback_episode_negative_frequency" type="float" default="120.0">
+  Stimulation frequency (Hz) for negative episode-level feedback
+</ParamField>
+
+<ParamField path="episode_only_feedback" type="bool" default="false">
+  Whether to provide feedback only at episode end (disables step-level feedback)
+</ParamField>
+
+## Reward Feedback Channels
+
+<ParamField path="use_reward_feedback" type="bool" default="true">
+  Whether to enable reward-based feedback stimulation
+</ParamField>
+
+<ParamField path="reward_feedback_positive_channels" type="List[int]" default="[19, 20, 22]">
+  Channel indices for positive reward feedback
+</ParamField>
+
+<ParamField path="reward_feedback_negative_channels" type="List[int]" default="[23, 24, 26]">
+  Channel indices for negative reward feedback
+</ParamField>
+
+## Event-based Feedback
+
+<ParamField path="event_movement_distance_threshold" type="float" default="10.0">
+  Distance threshold for triggering movement-based events
+</ParamField>
+
+<ParamField path="event_feedback_settings" type="Dict[str, EventFeedbackConfig]">
+  Dictionary mapping event names to EventFeedbackConfig objects. Contains configurations for:
+  - `enemy_kill`: Feedback when killing an enemy
+  - `armor_pickup`: Feedback when collecting armor
+  - `took_damage`: Feedback when taking damage
+  - `ammo_waste`: Feedback when wasting ammo
+  - `approach_target`: Feedback when moving closer to target
+  - `retreat_target`: Feedback when moving away from target
+  
+  See [EventFeedbackConfig](/api/event-feedback) for detailed field documentation.
+</ParamField>
+
+## Decoder Configuration
+
+<ParamField path="decoder_enforce_nonnegative" type="bool" default="false">
+  Whether to enforce non-negative weights in decoder linear readout heads. Experimental - requires testing
+</ParamField>
+
+<ParamField path="decoder_freeze_weights" type="bool" default="false">
+  Whether to freeze decoder weights during training. Experimental - requires testing
+</ParamField>
+
+<ParamField path="decoder_zero_bias" type="bool" default="true">
+  Whether to zero out decoder biases. Recommended to be true - bias can cause decoder to generate its own predictions
+</ParamField>
+
+<ParamField path="decoder_use_mlp" type="bool" default="false">
+  Whether to use MLP decoder instead of linear readout. Prefer false - MLP can learn to play the game instead of relying on neural responses
+</ParamField>
+
+<ParamField path="decoder_mlp_hidden" type="Optional[int]" default="32">
+  Hidden layer size for MLP decoder. Only used if `decoder_use_mlp` is true. Experimental value - requires testing
+</ParamField>
+
+<ParamField path="decoder_weight_l2_coef" type="float" default="0.0">
+  L2 regularization coefficient for decoder weights. Untuned
+</ParamField>
+
+<ParamField path="decoder_bias_l2_coef" type="float" default="0.0">
+  L2 regularization coefficient for decoder biases. Untuned
+</ParamField>
+
+<ParamField path="decoder_ablation_mode" type="str" default="none">
+  Ablation mode for testing decoder behavior. Valid values:
+  - `none`: Normal operation
+  - `random`: Replace spike features with random values
+  - `zero`: Replace spike features with zeros
+</ParamField>
+
+## Wall Detection
+
+<ParamField path="wall_ray_count" type="int" default="12">
+  Number of raycasts for wall detection. Probably less necessary with CNN encoder
+</ParamField>
+
+<ParamField path="wall_ray_max_range" type="int" default="64">
+  Maximum range for wall detection raycasts. Keep as is
+</ParamField>
+
+<ParamField path="wall_depth_max_distance" type="float" default="18.0">
+  Maximum depth distance for wall detection normalization. Already calibrated - keep as is
+</ParamField>
+
+## Encoder Configuration
+
+<ParamField path="encoder_trainable" type="bool" default="true">
+  Whether encoder network weights are trainable. Recommended to be true for reasonable PPO policy gradients, especially with `decoder_use_mlp: false`
+</ParamField>
+
+<ParamField path="encoder_entropy_coef" type="float" default="-0.10">
+  Entropy penalty coefficient for the encoder (uses Beta distribution sampling)
+</ParamField>
+
+<ParamField path="encoder_use_cnn" type="bool" default="true">
+  Whether to use CNN for visual feature extraction. Testing shows CNN does not overfit/learn on its own - useful to keep true
+</ParamField>
+
+<ParamField path="encoder_cnn_channels" type="int" default="16">
+  Number of base channels for CNN encoder. Arbitrary value - can be adjusted
+</ParamField>
+
+<ParamField path="encoder_cnn_downsample" type="int" default="4">
+  Downsampling factor for CNN input. Arbitrary value - can be adjusted
+</ParamField>
+
+## Episode Feedback Events
+
+<ParamField path="episode_positive_feedback_event" type="Optional[str]" default="None">
+  Specific event name to use for positive episode feedback. If None, uses overall episode reward
+</ParamField>
+
+<ParamField path="episode_negative_feedback_event" type="Optional[str]" default="None">
+  Specific event name to use for negative episode feedback. If None, uses overall episode reward
+</ParamField>
+
+## Surprise-based Feedback Scaling
+
+<ParamField path="feedback_surprise_gain" type="float" default="0.25">
+  Gain for surprise-based feedback scaling. Tune as needed based on neuron responses
+</ParamField>
+
+<ParamField path="feedback_surprise_max_scale" type="float" default="2.0">
+  Maximum scaling factor for surprise-based feedback. Tune as needed based on neuron responses
+</ParamField>
+
+<ParamField path="feedback_surprise_freq_gain" type="Optional[float]" default="0.65">
+  Frequency gain for surprise-based feedback. Tune as needed based on neuron responses
+</ParamField>
+
+<ParamField path="feedback_surprise_amp_gain" type="Optional[float]" default="0.35">
+  Amplitude gain for surprise-based feedback. Tune as needed based on neuron responses
+</ParamField>
+
+<ParamField path="feedback_surprise_freq_max_scale" type="Optional[float]" default="2.0">
+  Maximum frequency scale for surprise-based feedback. Tune as needed based on neuron responses
+</ParamField>
+
+<ParamField path="feedback_surprise_amp_max_scale" type="Optional[float]" default="1.5">
+  Maximum amplitude scale for surprise-based feedback. Tune as needed based on neuron responses
+</ParamField>
+
+## Distance Normalization
+
+<ParamField path="enemy_distance_normalization" type="float" default="1312.0">
+  Normalization constant for enemy distance features. Already calibrated - do not change
+</ParamField>
+
+## Usage Example
+
+```python
+from ppo_doom import PPOConfig
+
+# Create default configuration
+config = PPOConfig()
+
+# Override specific parameters
+config = PPOConfig(
+    learning_rate=1e-4,
+    max_episodes=5000,
+    encoder_use_cnn=True,
+    decoder_use_mlp=False,
+    use_hardware=True
+)
+
+# Access channel configuration
+print(config.encoding_channels)  # [8, 9, 10, 17, 18, 25, 27, 28, 57]
+print(config.attack_channels)    # [32, 33, 34]
+
+# Access event feedback settings
+kill_feedback = config.event_feedback_settings['enemy_kill']
+print(kill_feedback.base_frequency)  # 20.0
+```

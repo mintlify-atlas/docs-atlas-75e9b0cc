@@ -1,0 +1,303 @@
+---
+title: 'Encoder & Decoder Architecture'
+description: 'Configuration reference for encoder and decoder neural networks including CNN options, MLP options, weight constraints, and trainability settings'
+---
+
+## Overview
+
+The encoder network converts game observations into stimulation parameters (frequency and amplitude) for biological neurons. The decoder network reads spike features from neurons and outputs action logits. Together they form the biological neural interface.
+
+## Encoder Configuration
+
+### Trainability
+
+<ParamField path="encoder_trainable" type="bool" default="True">
+  Whether the encoder weights are trainable via backpropagation.
+  
+  When `True`, the encoder learns to generate optimal stimulation parameters using Beta distributions. When `False`, uses fixed sigmoid-based mapping.
+  
+  <Note>
+  Code comment: "Can try turning it False but I would say True is needed for reasonable PPO policy gradients especially if decoder_use_mlp: False"
+  </Note>
+</ParamField>
+
+```python
+config = PPOConfig(
+    encoder_trainable=True  # Enable encoder learning
+)
+```
+
+### Entropy Coefficient
+
+<ParamField path="encoder_entropy_coef" type="float" default="-0.10">
+  Entropy penalty coefficient for encoder Beta distributions.
+  
+  Negative value acts as entropy penalty (encourages more deterministic stimulation). Positive values would encourage exploration in stimulation space.
+</ParamField>
+
+```python
+config = PPOConfig(
+    encoder_entropy_coef=-0.10  # Penalty for encoder randomness
+)
+```
+
+### CNN Visual Processing
+
+<ParamField path="encoder_use_cnn" type="bool" default="True">
+  Enable CNN processing of visual screen buffer.
+  
+  When enabled, adds a convolutional neural network to process downsampled game screen before the encoder MLP.
+  
+  <Note>
+  Code comment: "With my testing it seems like the CNN does not overfit/learn on its own, seems useful to keep True"
+  </Note>
+</ParamField>
+
+<ParamField path="encoder_cnn_channels" type="int" default="16">
+  Base number of CNN channels in the first convolutional layer.
+  
+  The CNN architecture uses progressive channel expansion:
+  - Layer 1: `encoder_cnn_channels` (default 16)
+  - Layer 2: `encoder_cnn_channels * 2` (default 32)
+  - Layer 3: `encoder_cnn_channels * 4` (default 64)
+  
+  <Note>
+  In `training_server.py`, this is increased to 64 channels per DOOM Initial Report for better visual feature extraction.
+  </Note>
+</ParamField>
+
+<ParamField path="encoder_cnn_downsample" type="int" default="4">
+  Downsampling factor for screen buffer before CNN processing.
+  
+  Original resolution is divided by this factor. For example, with 320×240 resolution and downsample=4, CNN processes 80×60 images.
+</ParamField>
+
+```python
+config = PPOConfig(
+    encoder_use_cnn=True,
+    encoder_cnn_channels=64,    # Increased capacity
+    encoder_cnn_downsample=4    # 4x downsampling
+)
+```
+
+### CNN Architecture Details
+
+The encoder CNN uses the following architecture:
+
+```python
+nn.Sequential(
+    # Layer 1: base_channels filters
+    nn.Conv2d(1, base_channels, kernel_size=3, stride=1, padding=1),
+    nn.SiLU(),
+    nn.MaxPool2d(2),
+    
+    # Layer 2: base_channels * 2 filters
+    nn.Conv2d(base_channels, base_channels * 2, kernel_size=3, stride=1, padding=1),
+    nn.SiLU(),
+    nn.MaxPool2d(2),
+    
+    # Layer 3: base_channels * 4 filters
+    nn.Conv2d(base_channels * 2, base_channels * 4, kernel_size=3, stride=1, padding=1),
+    nn.SiLU(),
+    nn.AdaptiveAvgPool2d((1, 1))  # Global pooling to single vector
+)
+```
+
+## Decoder Configuration
+
+### Architecture Type
+
+<ParamField path="decoder_use_mlp" type="bool" default="False">
+  Use MLP decoder instead of linear readout heads.
+  
+  - `False`: Direct linear readout from spike features (recommended)
+  - `True`: 2-layer MLP processes spikes before action heads
+  
+  <Warning>
+  Code comment: "Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod"
+  </Warning>
+</ParamField>
+
+<ParamField path="decoder_mlp_hidden" type="int" default="32">
+  Hidden layer size when `decoder_use_mlp=True`.
+  
+  In `ppo_doom.py`: default is 32
+  In `training_server.py`: increased to 256
+</ParamField>
+
+```python
+# Linear decoder (recommended)
+config = PPOConfig(
+    decoder_use_mlp=False
+)
+
+# MLP decoder (experimental)
+config = PPOConfig(
+    decoder_use_mlp=True,
+    decoder_mlp_hidden=256
+)
+```
+
+### Weight Constraints
+
+<ParamField path="decoder_enforce_nonnegative" type="bool" default="False">
+  Enforce non-negative weights in decoder linear readout heads.
+  
+  When `True`, applies softplus activation to weights: `weight = softplus(raw_weight)`
+  
+  This ensures all spike contributions are positive, which can be biologically interpretable.
+</ParamField>
+
+<ParamField path="decoder_freeze_weights" type="bool" default="False">
+  Freeze all decoder parameters (no gradient updates).
+  
+  Useful for testing whether the encoder alone can learn, or for transfer learning scenarios.
+</ParamField>
+
+<ParamField path="decoder_zero_bias" type="bool" default="True">
+  Force decoder bias terms to zero and disable bias gradients.
+  
+  <Note>
+  Code comment: "Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement"
+  </Note>
+  
+  Setting bias to zero ensures actions are driven entirely by spike activity, not learned biases.
+</ParamField>
+
+```python
+config = PPOConfig(
+    decoder_enforce_nonnegative=False,  # Allow negative weights
+    decoder_freeze_weights=False,       # Train decoder
+    decoder_zero_bias=True              # Force zero bias
+)
+```
+
+### L2 Regularization
+
+<ParamField path="decoder_weight_l2_coef" type="float" default="0.0">
+  L2 regularization coefficient for decoder weights.
+  
+  Penalizes large weights to encourage simpler linear readouts. Currently untuned (set to 0.0).
+</ParamField>
+
+<ParamField path="decoder_bias_l2_coef" type="float" default="0.0">
+  L2 regularization coefficient for decoder biases.
+  
+  Currently untuned (set to 0.0).
+</ParamField>
+
+```python
+config = PPOConfig(
+    decoder_weight_l2_coef=0.001,  # Add weight regularization
+    decoder_bias_l2_coef=0.0
+)
+```
+
+### Ablation Testing
+
+<ParamField path="decoder_ablation_mode" type="str" default="'none'">
+  Ablation mode for testing decoder learning.
+  
+  - `'none'`: Normal operation, use real spike features
+  - `'zero'`: Replace spike features with zeros
+  - `'random'`: Replace spike features with random values
+  
+  Used to test if decoder is learning on its own vs. relying on neural activity.
+</ParamField>
+
+```python
+config = PPOConfig(
+    decoder_ablation_mode='zero'  # Test with no neural input
+)
+```
+
+## Network Architecture
+
+### Hidden Layer Size
+
+<ParamField path="hidden_size" type="int" default="128">
+  Hidden layer size for encoder, decoder MLP, and value network.
+  
+  Used across all network components for consistency.
+</ParamField>
+
+```python
+config = PPOConfig(
+    hidden_size=256  # Increase model capacity
+)
+```
+
+## Example Configurations
+
+### Minimal Linear Decoder
+
+```python
+# Pure linear readout from spikes - maximum biological interpretability
+minimal_config = PPOConfig(
+    encoder_trainable=True,
+    encoder_use_cnn=False,
+    encoder_entropy_coef=-0.10,
+    decoder_use_mlp=False,
+    decoder_enforce_nonnegative=True,   # Positive weights only
+    decoder_zero_bias=True,             # No bias
+    decoder_freeze_weights=False,
+    hidden_size=128
+)
+```
+
+### CNN-Based Encoder
+
+```python
+# Visual processing with CNN encoder
+visual_config = PPOConfig(
+    encoder_trainable=True,
+    encoder_use_cnn=True,
+    encoder_cnn_channels=64,            # High capacity
+    encoder_cnn_downsample=4,
+    encoder_entropy_coef=-0.10,
+    decoder_use_mlp=False,
+    decoder_zero_bias=True,
+    hidden_size=256
+)
+```
+
+### MLP Decoder (Experimental)
+
+```python
+# Non-linear decoder with MLP
+mlp_config = PPOConfig(
+    encoder_trainable=True,
+    encoder_use_cnn=True,
+    encoder_cnn_channels=32,
+    decoder_use_mlp=True,
+    decoder_mlp_hidden=256,
+    decoder_zero_bias=False,            # MLP can use bias
+    decoder_enforce_nonnegative=False,
+    hidden_size=128
+)
+```
+
+### Frozen Decoder Testing
+
+```python
+# Test encoder learning with fixed decoder
+frozen_config = PPOConfig(
+    encoder_trainable=True,
+    encoder_use_cnn=True,
+    decoder_use_mlp=False,
+    decoder_freeze_weights=True,        # Freeze decoder
+    decoder_zero_bias=True,
+    hidden_size=128
+)
+```
+
+## Related Configuration
+
+<CardGroup cols={2}>
+  <Card title="PPO Hyperparameters" icon="chart-line" href="/configuration/ppo-config">
+    Learning rate, gamma, GAE settings
+  </Card>
+  <Card title="Feedback Tuning" icon="wave-pulse" href="/configuration/feedback-tuning">
+    Stimulation feedback parameters
+  </Card>
+</CardGroup>

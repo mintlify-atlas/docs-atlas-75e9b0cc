@@ -1,0 +1,361 @@
+---
+title: training_server.py
+description: Remote training server that communicates with CL1 hardware over UDP for distributed neural training
+---
+
+## Overview
+
+`training_server.py` is a modified version of `ppo_doom.py` designed for **distributed training**. It runs PPO training on a GPU server while communicating with a remote CL1 device over UDP.
+
+**Architecture:**
+- **Training System:** Runs VizDoom, PyTorch models, and PPO algorithm
+- **CL1 Device:** Runs `cl1_neural_interface.py` to handle neural hardware
+- **Communication:** UDP protocol for low-latency stimulation/spike exchange
+
+**Key Differences from ppo_doom.py:**
+- No direct CL SDK imports (CL SDK only on CL1 device)
+- UDP sockets for stimulation commands and spike data
+- MJPEG server for remote visualization
+- Event metadata logging to CL1 device
+
+**Location:** `source/training_server.py`
+
+## Command-Line Arguments
+
+### Basic Options
+
+<ParamField path="--mode" type="string" default="train">
+  Execution mode for the training server
+  
+  **Choices:** `train`, `deploy`, `watch`
+  - `train`: Full training mode with gradient updates
+  - `deploy`: Run trained policy without gradient computation
+  - `watch`: Observe neural activity without training
+</ParamField>
+
+<ParamField path="--checkpoint" type="string" default="None">
+  Path to checkpoint file for loading pre-trained weights
+  
+  Example: `--checkpoint checkpoints/l5_2048_rand/checkpoint_7900.pt`
+</ParamField>
+
+<ParamField path="--max-episodes" type="integer" default="65000">
+  Maximum number of training episodes before termination
+</ParamField>
+
+<ParamField path="--device" type="string" default="cuda">
+  PyTorch device for gradient computation
+  
+  **Choices:** `cpu`, `cuda`
+</ParamField>
+
+### Neural Interface Options
+
+<ParamField path="--decoder-ablation" type="string" default="none">
+  Ablation mode for diagnostic testing of decoder dependency on spikes
+  
+  **Choices:**
+  - `none`: Normal operation, use real spike features
+  - `zero`: Replace spike features with zeros (tests decoder bias)
+  - `random`: Replace spike features with random values (tests decoder robustness)
+</ParamField>
+
+<ParamField path="--encoder-use-cnn" type="boolean" default="false">
+  Enable CNN encoder over screen buffer in addition to scalar features
+  
+  When enabled, processes downsampled screen buffer through convolutional network.
+</ParamField>
+
+### Display & Visualization
+
+<ParamField path="--show_window" type="boolean" default="false">
+  Display the VizDoom game window on the training system
+  
+  Note: For remote viewing, use the MJPEG stream instead.
+</ParamField>
+
+<ParamField path="--recording_path" type="string" default="/data/recordings/doom-neuron">
+  Directory path on CL1 device for saving neural recordings
+  
+  This path is sent to the CL1 device via event metadata. Actual recordings are managed by the CL1 device.
+</ParamField>
+
+<ParamField path="--visualisation-port" type="integer" default="12349">
+  TCP port for MJPEG visualization stream
+  
+  Access the live gameplay feed at: `http://<training-host>:<port>/doom.mjpeg`
+</ParamField>
+
+### Hardware Loop Configuration
+
+<ParamField path="--tick_frequency_hz" type="integer" default="10">
+  Frequency (Hz) for running the game loop
+  
+  This should match the `--tick-frequency` setting on the CL1 device.
+  
+  Controls the rate of:
+  - Sending stimulation commands to CL1
+  - Receiving spike data from CL1
+  - Game state updates
+</ParamField>
+
+### UDP Network Configuration
+
+<ParamField path="--cl1-host" type="string" default="localhost">
+  IP address of the CL1 device running `cl1_neural_interface.py`
+  
+  Example: `--cl1-host 192.168.1.100`
+</ParamField>
+
+<ParamField path="--cl1-stim-port" type="integer" default="12345">
+  UDP port for sending stimulation commands to CL1 device
+  
+  Must match `--stim-port` on CL1 device.
+</ParamField>
+
+<ParamField path="--cl1-spike-port" type="integer" default="12346">
+  UDP port for receiving spike data from CL1 device
+  
+  Must match `--spike-port` on CL1 device.
+</ParamField>
+
+<ParamField path="--cl1-event-port" type="integer" default="12347">
+  UDP port for sending event metadata to CL1 device
+  
+  Events include episode completions, checkpoints, and training completion signals.
+  
+  Must match `--event-port` on CL1 device.
+</ParamField>
+
+<ParamField path="--cl1-feedback-port" type="integer" default="12348">
+  UDP port for sending feedback stimulation commands to CL1 device
+  
+  Feedback includes reward signals and event-based stimulation (kills, damage, etc.).
+  
+  Must match `--feedback-port` on CL1 device.
+</ParamField>
+
+### Feedback Configuration
+
+<ParamField path="--use-episode-feedback" type="boolean" default="true">
+  Enable episode-level feedback stimulation
+  
+  When enabled, applies feedback stimulation at the end of each episode based on total reward.
+</ParamField>
+
+<ParamField path="--no-episode-feedback" type="boolean" default="false">
+  Disable episode-level feedback stimulation
+  
+  Convenience flag to turn off episode feedback (sets `use_episode_feedback=False`).
+</ParamField>
+
+<ParamField path="--episode-feedback-surprise-scaling" type="boolean" default="true">
+  Scale episode feedback intensity by TD-error surprise magnitude
+  
+  When enabled, unexpected rewards/penalties receive stronger feedback.
+</ParamField>
+
+<ParamField path="--no-episode-feedback-surprise-scaling" type="boolean" default="false">
+  Disable surprise scaling for episode feedback
+  
+  Use fixed feedback intensity regardless of prediction error.
+</ParamField>
+
+## Usage Examples
+
+### Basic Training Setup
+
+**On CL1 Device:**
+```bash
+python cl1_neural_interface.py \
+  --training-host 192.168.1.50 \
+  --tick-frequency 10
+```
+
+**On Training Server:**
+```bash
+python training_server.py \
+  --mode train \
+  --cl1-host 192.168.1.100 \
+  --max-episodes 10000 \
+  --device cuda \
+  --encoder-use-cnn
+```
+
+### Custom Port Configuration
+
+```bash
+python training_server.py \
+  --mode train \
+  --cl1-host 192.168.1.100 \
+  --cl1-stim-port 5000 \
+  --cl1-spike-port 5001 \
+  --cl1-event-port 5002 \
+  --cl1-feedback-port 5003 \
+  --visualisation-port 8080
+```
+
+### Resume from Checkpoint
+
+```bash
+python training_server.py \
+  --mode train \
+  --checkpoint checkpoints/checkpoint_5000.pt \
+  --cl1-host 192.168.1.100 \
+  --max-episodes 20000
+```
+
+### Deployment Mode
+
+```bash
+python training_server.py \
+  --mode deploy \
+  --checkpoint checkpoints/best_model.pt \
+  --cl1-host 192.168.1.100 \
+  --show_window
+```
+
+### Disable Episode Feedback
+
+```bash
+python training_server.py \
+  --mode train \
+  --cl1-host 192.168.1.100 \
+  --no-episode-feedback \
+  --no-episode-feedback-surprise-scaling
+```
+
+## Network Communication
+
+### UDP Packet Flow
+
+**Training System → CL1 Device:**
+1. **Stimulation Commands** (port 12345): Frequencies and amplitudes for neural stimulation
+2. **Event Metadata** (port 12347): Episode completion, checkpoint saves, training status
+3. **Feedback Commands** (port 12348): Reward/event-based stimulation
+
+**CL1 Device → Training System:**
+1. **Spike Data** (port 12346): Spike counts per channel group from each hardware tick
+
+### UDP Protocol Details
+
+See [udp_protocol.py](/api/udp-protocol) for packet format specifications.
+
+### Socket Setup
+
+```python
+# Stimulation socket (send to CL1)
+stim_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+# Spike socket (receive from CL1)
+spike_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+spike_socket.bind(('0.0.0.0', config.cl1_spike_port))
+spike_socket.settimeout(0.1)  # 100ms timeout
+
+# Event socket (send to CL1)
+event_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+# Feedback socket (send to CL1)
+feedback_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+```
+
+## MJPEG Visualization
+
+The training server hosts an MJPEG stream for remote visualization:
+
+```python
+from mjpeg_server import MJPEGServer
+
+mjpeg_server = MJPEGServer(
+    host=config.vis_host,
+    port=config.vis_port,
+    path=config.vis_path
+)
+```
+
+**Access:** `http://<training-host>:12349/doom.mjpeg`
+
+The stream shows:
+- Game screen (if `use_screen_buffer=True`)
+- Player stats overlay
+- Episode statistics
+
+## Event Metadata
+
+The training system sends metadata to the CL1 device for recording:
+
+### Episode End Event
+
+```json
+{
+  "episode": 1234,
+  "total_reward": 450.5,
+  "episode_length": 512,
+  "kills": 3,
+  "damage_taken": 25,
+  "survived": true
+}
+```
+
+### Training Complete Event
+
+```json
+{
+  "total_episodes": 10000,
+  "total_steps": 5120000,
+  "reason": "max_episodes_reached"
+}
+```
+
+These events are logged to the CL1 DataStream for analysis.
+
+## Performance Considerations
+
+### Network Latency
+
+- **Target Latency:** < 5ms round-trip
+- **Typical:** 1-2ms on local network
+- **UDP:** No retransmission overhead
+
+### Tick Frequency Trade-offs
+
+| Frequency | Game Speed | Latency Sensitivity | Compute Load |
+|-----------|------------|---------------------|-------------|
+| 10 Hz     | Slow       | Low                 | Low         |
+| 30 Hz     | Normal     | Medium              | Medium      |
+| 60 Hz     | Fast       | High                | High        |
+| 120 Hz    | Very Fast  | Very High           | Very High   |
+
+**Recommendation:** Start with 10 Hz, increase once training is stable.
+
+## Troubleshooting
+
+### No Spike Data Received
+
+```bash
+# Check if CL1 device is reachable
+ping <cl1-host>
+
+# Check if CL1 interface is running
+# On CL1 device:
+ps aux | grep cl1_neural_interface
+```
+
+### High Packet Loss
+
+- Reduce tick frequency
+- Check network bandwidth
+- Use wired connection instead of WiFi
+- Ensure no firewall blocking UDP ports
+
+### Latency Issues
+
+- Monitor latency with built-in logging (every 1000 packets)
+- Consider switching to 1Gbps or 10Gbps network
+- Reduce batch size to decrease compute time
+
+## See Also
+
+- [ppo_doom.py](/api/ppo-doom) - Direct CL1 training script
+- [cl1_neural_interface.py](/api/cl1-interface) - CL1 hardware interface server
+- [udp_protocol.py](/api/udp-protocol) - UDP packet formats

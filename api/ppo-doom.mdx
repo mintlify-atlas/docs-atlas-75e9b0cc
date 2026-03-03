@@ -1,0 +1,229 @@
+---
+title: ppo_doom.py
+description: PPO reinforcement learning script for training biological neurons to play DOOM using CL1 hardware interface
+---
+
+## Overview
+
+`ppo_doom.py` is the main training script for the DOOM Neuron project. It trains biological neurons to play DOOM using PPO (Proximal Policy Optimization) reinforcement learning with direct CL1 hardware integration.
+
+**Key Features:**
+- PPO policy with encoder-decoder neural architecture
+- Direct CL1 SDK integration for real-time neural stimulation and spike recording
+- VizDoom environment with customizable scenarios
+- Tensorboard logging and checkpoint management
+- Hardware loop running at configurable tick frequency
+
+**Location:** `source/ppo_doom.py`
+
+## Command-Line Arguments
+
+### Basic Options
+
+<ParamField path="--mode" type="string" default="train">
+  Execution mode for the script
+  
+  **Choices:** `train`, `deploy`, `watch`
+  - `train`: Full training mode with CL1 hardware and gradient updates
+  - `deploy`: Run trained policy without gradient computation
+  - `watch`: Observe neural activity without training
+</ParamField>
+
+<ParamField path="--checkpoint" type="string" default="None">
+  Path to checkpoint file for loading pre-trained weights
+  
+  Example: `--checkpoint checkpoints/l5_2048_rand/checkpoint_7900.pt`
+</ParamField>
+
+<ParamField path="--max-episodes" type="integer" default="65000">
+  Maximum number of training episodes before termination
+</ParamField>
+
+<ParamField path="--device" type="string" default="cuda">
+  PyTorch device for gradient computation
+  
+  **Choices:** `cpu`, `cuda`
+</ParamField>
+
+### Neural Interface Options
+
+<ParamField path="--decoder-ablation" type="string" default="none">
+  Ablation mode for diagnostic testing of decoder dependency on spikes
+  
+  **Choices:**
+  - `none`: Normal operation, use real spike features
+  - `zero`: Replace spike features with zeros (tests decoder bias)
+  - `random`: Replace spike features with random values (tests decoder robustness)
+</ParamField>
+
+<ParamField path="--encoder-use-cnn" type="boolean" default="false">
+  Enable CNN encoder over screen buffer in addition to scalar features
+  
+  When enabled, the encoder processes both scalar observations (player stats, enemy positions) and downsampled screen buffer through a convolutional network.
+</ParamField>
+
+### Hardware & Recording
+
+<ParamField path="--show_window" type="boolean" default="false">
+  Display the VizDoom game window during training
+  
+  Useful for debugging and visualization, but may impact performance.
+</ParamField>
+
+<ParamField path="--recording_path" type="string" default="/data/recordings/doom-neuron">
+  Directory path for saving CL1 recordings
+  
+  Recordings contain raw neural data captured during training sessions.
+</ParamField>
+
+<ParamField path="--tick_frequency_hz" type="integer" default="10">
+  Frequency (Hz) for running the CL1 hardware loop
+  
+  Controls how many times per second the system:
+  1. Applies neural stimulation
+  2. Collects spike responses
+  3. Updates game state
+  
+  Higher frequencies enable faster gameplay but require more compute resources.
+</ParamField>
+
+## Usage Examples
+
+### Training from Scratch
+
+```bash
+python ppo_doom.py \
+  --mode train \
+  --max-episodes 10000 \
+  --device cuda \
+  --encoder-use-cnn \
+  --tick_frequency_hz 10
+```
+
+### Resume from Checkpoint
+
+```bash
+python ppo_doom.py \
+  --mode train \
+  --checkpoint checkpoints/l5_2048_rand/checkpoint_7900.pt \
+  --max-episodes 20000 \
+  --device cuda
+```
+
+### Deployment (No Gradient Updates)
+
+```bash
+python ppo_doom.py \
+  --mode deploy \
+  --checkpoint checkpoints/best_model.pt \
+  --show_window \
+  --tick_frequency_hz 30
+```
+
+### Ablation Testing
+
+```bash
+# Test decoder with zero spike input
+python ppo_doom.py \
+  --mode deploy \
+  --checkpoint checkpoints/model.pt \
+  --decoder-ablation zero
+
+# Test decoder with random spike input
+python ppo_doom.py \
+  --mode deploy \
+  --checkpoint checkpoints/model.pt \
+  --decoder-ablation random
+```
+
+## Architecture Overview
+
+### PPOConfig Dataclass
+
+The script uses a `PPOConfig` dataclass for configuration. Key parameters:
+
+- **Environment:** `doom_config`, `screen_resolution`, `max_turn_delta`
+- **Neural Interface:** Channel assignments for encoding, movement, camera, attack
+- **Stimulation:** `phase1_duration`, `phase2_duration`, `min_amplitude`, `max_amplitude`
+- **Burst Design:** `min_frequency`, `max_frequency`, `burst_count`
+- **PPO Hyperparameters:** `learning_rate`, `gamma`, `gae_lambda`, `clip_epsilon`
+- **Training:** `num_envs`, `steps_per_update`, `batch_size`, `num_epochs`
+- **Network:** `hidden_size`, encoder/decoder configuration
+
+### Neural Networks
+
+#### EncoderNetwork
+Encodes game state into CL1 stimulation parameters (frequencies and amplitudes)
+- Optional CNN for screen buffer processing
+- Beta distribution outputs for trainable encoder
+- Supports both deterministic and stochastic encoding
+
+#### DecoderNetwork
+Decodes spike responses into game actions
+- Linear readout heads with optional non-negative constraints
+- Separate heads for movement, camera, and attack
+- Optional MLP architecture (experimental)
+
+#### ValueNetwork
+Estimates state value for PPO critic
+- Multi-layer perceptron with SiLU activation
+- Single output predicting expected return
+
+### PPOPolicy Class
+
+Main policy class combining encoder, decoder, and value network:
+- `sample_encoder()`: Generate stimulation parameters
+- `decode_spikes_to_action()`: Convert spikes to actions
+- `evaluate_actions()`: Compute log probabilities and entropy for PPO update
+- `apply_stimulation()`: Send stimulation to CL1 hardware
+- `collect_spikes()`: Gather spike counts from CL1 tick
+- `get_value()`: Get state value estimate
+
+## Hardware Loop
+
+The training loop integrates directly with CL1 hardware:
+
+```python
+with cl.open() as neurons:
+    for tick in neurons.loop(ticks_per_second=tick_frequency_hz):
+        # 1. Observe game state
+        obs, info = env.observe()
+        
+        # 2. Encode state → stimulation parameters
+        frequencies, amplitudes = policy.sample_encoder(obs)
+        
+        # 3. Apply stimulation to neurons
+        policy.apply_stimulation(neurons, frequencies, amplitudes)
+        
+        # 4. Collect spike responses
+        spike_features = policy.collect_spikes(tick)
+        
+        # 5. Decode spikes → game actions
+        actions = policy.decode_spikes_to_action(spike_features)
+        
+        # 6. Step environment
+        next_obs, reward, done, info = env.step(actions)
+        
+        # 7. Store experience for PPO update
+        # ...
+```
+
+## Checkpoints
+
+Checkpoints are saved every `save_interval` episodes to `checkpoint_dir`:
+
+```python
+{
+    'episode': episode_number,
+    'policy_state_dict': policy.state_dict(),
+    'optimizer_state_dict': optimizer.state_dict(),
+    'config': config,
+    'stats': training_stats
+}
+```
+
+## See Also
+
+- [training_server.py](/api/training-server) - Remote training with UDP communication
+- [cl1_neural_interface.py](/api/cl1-interface) - CL1 hardware interface server
+- [udp_protocol.py](/api/udp-protocol) - UDP packet formats

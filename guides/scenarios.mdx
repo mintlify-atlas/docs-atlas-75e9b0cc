@@ -1,0 +1,325 @@
+---
+title: "DOOM Scenarios"
+description: "Available DOOM scenarios and curriculum stages for training biological neurons"
+---
+
+## Overview
+
+DOOM Neuron supports multiple game scenarios with different difficulty levels and training objectives. The scenario is configured via `TrainingConfig.doom_config` in code (not a CLI argument).
+
+<Tip>
+  The default scenario is `progressive_deathmatch.cfg`, which is recommended for most training runs.
+</Tip>
+
+## Available Scenarios
+
+### Progressive Deathmatch (Default)
+
+**Config:** `progressive_deathmatch.cfg`  
+**WAD:** `progressive_deathmatch.wad`
+
+```python
+PPOConfig.doom_config = "progressive_deathmatch.cfg"
+```
+
+Similar to survival mode but with enhanced gameplay mechanics:
+
+- **Ammo Management:** Kills don't reset ammo count, encouraging proper ammo conservation
+- **Movement Tweaks:** Modified movement mechanics make training easier
+- **Progressive Difficulty:** Difficulty scales as agent improves
+
+**Best for:**
+- Default training runs
+- Learning ammo management strategies
+- Agents that need to balance aggression with resource management
+
+<Warning>
+  This is the **recommended** scenario for most users. It provides the best balance of challenge and trainability.
+</Warning>
+
+### Survival
+
+**Config:** `survival.cfg`  
+**WAD:** `survival.wad`
+
+```python
+PPOConfig.doom_config = "survival.cfg"
+```
+
+Classic survival scenario:
+
+- **Objective:** Survive as long as possible against waves of enemies
+- **Ammo Reset:** Kills reset ammo count (unlimited ammo when killing)
+- **Difficulty:** Moderate, good for testing basic combat skills
+
+**Best for:**
+- Testing combat abilities without resource management
+- Agents focused on survival and kill count
+- Baseline comparisons
+
+### Deadly Corridor Curriculum
+
+**Configs:** `deadly_corridor_1.cfg` through `deadly_corridor_5.cfg`  
+**WAD:** `deadly_corridor.wad`
+
+A progressive curriculum with 5 difficulty stages:
+
+<Steps>
+  <Step title="Stage 1: deadly_corridor_1.cfg">
+    **Easiest stage** - Introduction to corridor navigation
+    
+    ```python
+    PPOConfig.doom_config = "deadly_corridor_1.cfg"
+    ```
+    
+    - Minimal enemies
+    - Focus on basic movement
+    - Learn corridor geometry
+  </Step>
+
+  <Step title="Stage 2: deadly_corridor_2.cfg">
+    **Beginner stage** - Adding combat elements
+    
+    ```python
+    PPOConfig.doom_config = "deadly_corridor_2.cfg"
+    ```
+    
+    - More enemies introduced
+    - Basic combat required
+    - Movement still forgiving
+  </Step>
+
+  <Step title="Stage 3: deadly_corridor_3.cfg">
+    **Intermediate stage** - Balanced challenge
+    
+    ```python
+    PPOConfig.doom_config = "deadly_corridor_3.cfg"
+    ```
+    
+    - Moderate enemy density
+    - Requires movement + combat coordination
+    - Armor pickups become important
+  </Step>
+
+  <Step title="Stage 4: deadly_corridor_4.cfg">
+    **Advanced stage** - High difficulty
+    
+    ```python
+    PPOConfig.doom_config = "deadly_corridor_4.cfg"
+    ```
+    
+    - High enemy density
+    - Strategic positioning required
+    - Resource management critical
+  </Step>
+
+  <Step title="Stage 5: deadly_corridor_5.cfg">
+    **Benchmark stage** - Significant difficulty jump
+    
+    ```python
+    PPOConfig.doom_config = "deadly_corridor_5.cfg"
+    ```
+    
+    - **This is the official benchmark**
+    - Massive difficulty increase from stage 4
+    - Requires refined strategies
+    - Agents trained on 1-4 may develop suboptimal habits (e.g., running straight for armor)
+  </Step>
+</Steps>
+
+<Warning>
+  **Deadly Corridor Curriculum Notes:**
+  
+  - Stages 1-4 ramp difficulty **gradually**
+  - Stage 5 is a **significant jump** and is the actual benchmark
+  - Training through 1-4 may result in movement habits that underperform on stage 5
+  - Consider fine-tuning on stage 5 with a **lower learning rate** to adapt behavior
+</Warning>
+
+## Curriculum Strategy
+
+For deadly corridor training, use this recommended progression:
+
+<Tabs>
+  <Tab title="Progressive Training">
+    Train sequentially through stages 1-4, then fine-tune on stage 5:
+
+    ```bash
+    # Stage 1 - Initial training
+    python3 ppo_doom.py  # with doom_config="deadly_corridor_1.cfg"
+    
+    # Stage 2 - Load checkpoint from stage 1
+    python3 ppo_doom.py  # with doom_config="deadly_corridor_2.cfg"
+    
+    # Stage 3 - Load checkpoint from stage 2
+    python3 ppo_doom.py  # with doom_config="deadly_corridor_3.cfg"
+    
+    # Stage 4 - Load checkpoint from stage 3
+    python3 ppo_doom.py  # with doom_config="deadly_corridor_4.cfg"
+    
+    # Stage 5 - Fine-tune with LOWER learning rate
+    python3 ppo_doom.py  # with doom_config="deadly_corridor_5.cfg", learning_rate=1e-4
+    ```
+  </Tab>
+
+  <Tab title="Direct Training">
+    Start directly on your target stage (faster but harder):
+
+    ```python
+    # Train directly on stage 5 (benchmark)
+    PPOConfig(
+        doom_config="deadly_corridor_5.cfg",
+        learning_rate=3e-4,  # Standard learning rate
+        max_episodes=50000   # May need more episodes
+    )
+    ```
+
+    <Tip>
+      Direct training on stage 5 requires more episodes but avoids potentially harmful habits from easier stages.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Scenario-Specific Tuning
+
+### Progressive Deathmatch & Survival
+
+Default PPO parameters work well:
+
+```python
+PPOConfig(
+    doom_config="progressive_deathmatch.cfg",
+    learning_rate=3e-4,
+    gamma=0.99,
+    gae_lambda=0.95,
+    steps_per_update=2048,
+    batch_size=256,
+    num_epochs=4
+)
+```
+
+### Deadly Corridor
+
+Tuned parameters from testing (reference values):
+
+```python
+PPOConfig(
+    doom_config="deadly_corridor_5.cfg",
+    
+    # Ray-cast features tuned for corridor geometry
+    wall_ray_count=12,
+    wall_ray_max_range=64,
+    wall_depth_max_distance=18.0,
+    
+    # Encoder configuration
+    encoder_trainable=True,
+    encoder_entropy_coef=-0.10,  # Encourage confident stimulation
+    encoder_use_cnn=True,
+    encoder_cnn_channels=16,
+    encoder_cnn_downsample=4,
+    
+    # Decoder configuration
+    decoder_zero_bias=True,  # Prevent decoder-sided learning
+    decoder_enforce_nonnegative=False,
+    decoder_freeze_weights=False,
+    decoder_use_mlp=False,  # Linear decoder for transparency
+    
+    # Distance normalization for deadly corridor geometry
+    enemy_distance_normalization=1312.0,
+    
+    # Feedback settings
+    use_reward_feedback=True,
+    feedback_positive_amplitude=2.0,
+    feedback_negative_amplitude=2.0
+)
+```
+
+<Warning>
+  The values above are **tuned specifically for deadly corridor scenarios**. Other scenarios (progressive deathmatch, survival) will likely require different values for:
+  - Feedback scaling
+  - Reward shaping
+  - Ray-cast geometry
+  - Curriculum pacing
+  
+  **Treat these as a starting point only.**
+</Warning>
+
+## Screen Resolution
+
+All scenarios use `RES_320X240` by default:
+
+```python
+PPOConfig(
+    screen_resolution="RES_320X240",  # 320x240 resolution
+    encoder_use_cnn=True               # CNN processes screen buffer
+)
+```
+
+Higher resolutions require adjusting CNN parameters:
+
+```python
+PPOConfig(
+    screen_resolution="RES_640X480",
+    encoder_cnn_channels=32,      # Bump channels for higher resolution
+    encoder_cnn_downsample=8      # Adjust downsampling
+)
+```
+
+## Action Spaces
+
+### Hybrid Actions (Default)
+
+Continuous + discrete actions for high movement fidelity:
+
+```python
+PPOConfig(
+    use_discrete_action_set=False  # Hybrid actions (default)
+)
+```
+
+**Provides:**
+- Smooth movement
+- Precise aiming
+- Better visual appeal
+- Higher entropy (requires more training)
+
+### Discrete Actions
+
+Simplified action space for faster convergence:
+
+```python
+PPOConfig(
+    use_discrete_action_set=True  # Discrete-only actions
+)
+```
+
+**Provides:**
+- Lower entropy
+- Faster training
+- Reduced movement fidelity
+- Less visually impressive
+
+<Tip>
+  **Only use discrete actions** if hybrid actions fail to converge after extensive tuning. The movement quality is significantly reduced.
+</Tip>
+
+## Monitoring Training
+
+Track scenario-specific metrics with TensorBoard:
+
+```bash
+tensorboard --logdir checkpoints/l5_2048_rand/logs --port 6006
+```
+
+**Key metrics to watch:**
+- `episode_reward` - Total reward per episode
+- `episode_length` - Survival time
+- `kill_count` - Enemies eliminated
+- `policy_loss` - PPO policy gradient loss
+- `value_loss` - Value function error
+
+## Next Steps
+
+- Set up [local development](/guides/local-setup) to test scenarios
+- Configure [remote training](/guides/remote-training) for production runs
+- Learn [checkpoint management](/guides/checkpoint-management) to save progress between curriculum stages

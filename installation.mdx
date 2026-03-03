@@ -1,0 +1,362 @@
+---
+title: Installation
+description: Install DOOM Neuron dependencies including VizDoom, CL SDK, PyTorch, and configure your training environment
+---
+
+# Installation
+
+Complete installation guide for DOOM Neuron and all dependencies.
+
+## System Requirements
+
+### Hardware
+- **CL1 Hardware**: Required for biological neuron training (or CL SDK for testing)
+- **GPU**: CUDA-capable GPU recommended for faster training (CPU works but slower)
+- **RAM**: 8GB minimum, 16GB+ recommended
+- **Storage**: 5GB for dependencies + checkpoints
+
+### Software
+- **Operating System**: Linux (Ubuntu 20.04+ recommended), macOS, or WSL2 on Windows
+- **Python**: 3.8 or higher
+- **CUDA**: 11.0+ if using GPU acceleration (tested with CUDA 13.0)
+
+### Network (for distributed training)
+- **Bandwidth**: Stable local network for CL1 ↔ Training Server communication
+- **Latency**: Under 10ms recommended for real-time neural feedback
+- **Ports**: UDP ports 12345-12348 must be accessible
+
+## Installation Steps
+
+<Steps>
+  <Step title="Create Python Environment">
+    Create and activate a virtual environment:
+    
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
+    ```
+    
+    <Note>
+    Always activate this environment before running DOOM Neuron:
+    ```bash
+    source .venv/bin/activate
+    ```
+    </Note>
+  </Step>
+  
+  <Step title="Install Core Dependencies">
+    Install all required packages from `requirements.txt`:
+    
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+    This installs:
+    - **vizdoom==1.3.0.dev2** - DOOM game engine
+    - **tables** - HDF5 file support for neural data
+    - **tensorboard==2.20.0** - Training visualization
+    - **opencv-python** - Image processing
+    - **torch** - PyTorch for neural networks
+    - **cl-sdk** - CL1 hardware interface (commented, install separately)
+    
+    <Warning>
+    The `requirements.txt` has `# cl-sdk` and `# torch` commented out. Install these separately based on your hardware configuration.
+    </Warning>
+  </Step>
+  
+  <Step title="Install PyTorch">
+    Install PyTorch with CUDA support (or CPU-only):
+    
+    <CodeGroup>
+    ```bash CUDA 11.8
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+    ```
+    
+    ```bash CUDA 12.1
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    ```
+    
+    ```bash CPU Only
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    ```
+    </CodeGroup>
+    
+    <Tip>
+    The project was tested with **Torch 2.10** and **CUDA 13.0**, but any compatible version should work. The exact version doesn't matter much for this project.
+    </Tip>
+    
+    Verify PyTorch installation:
+    ```bash
+    python3 -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+    ```
+  </Step>
+  
+  <Step title="Install CL SDK">
+    Install the CL SDK for interfacing with CL1 hardware:
+    
+    ```bash
+    pip install cl-sdk
+    ```
+    
+    <Note>
+    If you don't have physical CL1 hardware, the SDK can run in simulation mode for testing the architecture.
+    </Note>
+    
+    Verify CL SDK installation:
+    ```bash
+    python3 -c "import cl; print('CL SDK installed successfully')"
+    ```
+  </Step>
+  
+  <Step title="Verify VizDoom Installation">
+    Test that VizDoom is correctly installed:
+    
+    ```bash
+    python3 -c "import vizdoom; print(f'VizDoom {vizdoom.__version__} installed')"
+    ```
+    
+    VizDoom should display version `1.3.0.dev2`.
+  </Step>
+  
+  <Step title="Verify All Dependencies">
+    Run a comprehensive check:
+    
+    ```bash
+    python3 -c "
+import vizdoom
+import tables
+import tensorboard
+import cv2
+import torch
+import cl
+import numpy as np
+
+print('✓ VizDoom:', vizdoom.__version__)
+print('✓ PyTables:', tables.__version__)
+print('✓ TensorBoard:', tensorboard.__version__)
+print('✓ OpenCV:', cv2.__version__)
+print('✓ PyTorch:', torch.__version__)
+print('✓ CL SDK: available')
+print('✓ NumPy:', np.__version__)
+print('\nAll dependencies installed successfully!')
+    "
+    ```
+  </Step>
+</Steps>
+
+## Configuration Files
+
+DOOM Neuron includes several scenario configuration files:
+
+<CodeGroup>
+```bash List Scenarios
+ls *.cfg
+```
+
+```text Output
+progressive_deathmatch.cfg  # Default scenario
+survival.cfg                # Survival mode
+deadly_corridor_1.cfg       # Curriculum stage 1 (easiest)
+deadly_corridor_2.cfg       # Curriculum stage 2
+deadly_corridor_3.cfg       # Curriculum stage 3
+deadly_corridor_4.cfg       # Curriculum stage 4
+deadly_corridor_5.cfg       # Curriculum stage 5 (benchmark)
+```
+</CodeGroup>
+
+### Scenario Descriptions
+
+| Config File | WAD File | Description |
+|-------------|----------|-------------|
+| `progressive_deathmatch.cfg` | `progressive_deathmatch.wad` | **Default.** Similar to survival but kills don't reset ammo count, encouraging proper ammo management. Includes movement tweaks to make training easier. |
+| `survival.cfg` | `survival.wad` | Classic survival scenario. |
+| `deadly_corridor_1.cfg` – `deadly_corridor_5.cfg` | `deadly_corridor.wad` | Curriculum stages where 1–4 ramp difficulty gradually, and 5 is the benchmark. Progress through 1-4 builds basic policies but may result in movement habits that underperform on 5 (straight running toward armor). |
+
+<Tip>
+The scenario is set via `TrainingConfig.doom_config` in code, not as a CLI argument.
+</Tip>
+
+## Directory Structure
+
+After installation, your project should look like:
+
+```
+.
+├── .venv/                          # Virtual environment
+├── checkpoints/                    # Model checkpoints
+│   └── l5_2048_rand/              # Default checkpoint directory
+│       ├── logs/                  # TensorBoard logs
+│       └── episode_*.pt           # Checkpoint files
+├── recordings/                     # Neural recordings (if enabled)
+├── scripts/                        # Convenience scripts
+│   ├── run_cl1.sh
+│   ├── run_training_server.sh
+│   ├── run_sdk_cl1.sh
+│   └── run_sdk_training_server.sh
+├── requirements.txt               # Python dependencies
+├── ppo_doom.py                    # Main PPO training script
+├── training_server.py             # Training server (UDP mode)
+├── cl1_neural_interface.py        # CL1 interface (UDP mode)
+├── progressive_deathmatch.cfg     # Default scenario config
+├── survival.cfg
+├── deadly_corridor_*.cfg
+└── *.wad                          # DOOM WAD files
+```
+
+## Environment Variables (Optional)
+
+You can set these environment variables for convenience:
+
+```bash ~/.bashrc or ~/.zshrc
+export DOOM_NEURON_HOME="/path/to/doom-neuron"
+export DOOM_CHECKPOINT_DIR="$DOOM_NEURON_HOME/checkpoints/l5_2048_rand"
+export DOOM_RECORDING_PATH="$DOOM_NEURON_HOME/recordings"
+
+# Activate virtual environment automatically
+alias doom-neuron="cd $DOOM_NEURON_HOME && source .venv/bin/activate"
+```
+
+## Docker Installation (Alternative)
+
+For containerized deployment, use the provided Docker scripts:
+
+```bash
+./scripts/build_docker_rocm.sh  # Build Docker image with ROCm support
+./scripts/run_docker.sh         # Run training in Docker container
+```
+
+<Warning>
+Docker support is experimental. The UDP communication between containers and host may require additional network configuration.
+</Warning>
+
+## Network Configuration
+
+For distributed training (CL1 on separate device), ensure firewall rules allow UDP traffic:
+
+<CodeGroup>
+```bash Ubuntu/Debian (ufw)
+sudo ufw allow 12345:12348/udp
+sudo ufw reload
+```
+
+```bash CentOS/RHEL (firewalld)
+sudo firewall-cmd --permanent --add-port=12345-12348/udp
+sudo firewall-cmd --reload
+```
+
+```bash iptables
+sudo iptables -A INPUT -p udp --dport 12345:12348 -j ACCEPT
+sudo iptables-save
+```
+</CodeGroup>
+
+### Port Usage
+
+| Port | Direction | Purpose |
+|------|-----------|----------|
+| **12345** | Training → CL1 | Stimulation commands (StimDesign, BurstDesign) |
+| **12346** | CL1 → Training | Spike data (timestamps, channels, waveforms) |
+| **12347** | Training → CL1 | Event metadata (kills, damage, pickups) |
+| **12348** | Training → CL1 | Feedback commands (reward-based electrical pulses) |
+| **12349** | Training → Browser | MJPEG stream for visualization (optional) |
+
+## Testing Installation
+
+Verify everything works with a quick CPU-based test:
+
+```bash
+python3 training_server.py \
+    --mode train \
+    --device cpu \
+    --cl1-host localhost \
+    --max-episodes 5 \
+    --show_window
+```
+
+You should see:
+1. VizDoom window opens (if `--show_window` is set)
+2. Training episodes start running
+3. Console output shows episode rewards
+4. No error messages about missing dependencies
+
+<Tip>
+Run with `--device cpu` first to ensure the pipeline works before switching to `--device cuda`.
+</Tip>
+
+## Troubleshooting
+
+### VizDoom Import Error
+
+**Problem**: `ImportError: No module named 'vizdoom'`
+
+**Solution**:
+```bash
+pip install vizdoom==1.3.0.dev2
+```
+
+If this fails, you may need to install VizDoom dependencies:
+```bash Ubuntu/Debian
+sudo apt-get install cmake libboost-all-dev libsdl2-dev libfreetype6-dev
+pip install vizdoom
+```
+
+### CL SDK Not Found
+
+**Problem**: `ImportError: No module named 'cl'`
+
+**Solution**:
+```bash
+pip install cl-sdk
+```
+
+### CUDA Out of Memory
+
+**Problem**: `RuntimeError: CUDA out of memory`
+
+**Solution**: Reduce batch size in `PPOConfig`:
+```python ppo_doom.py
+batch_size: int = 128  # Reduce from 256
+steps_per_update: int = 1024  # Reduce from 2048
+```
+
+Or train on CPU:
+```bash
+python training_server.py --mode train --device cpu --cl1-host localhost
+```
+
+### UDP Port Already in Use
+
+**Problem**: `OSError: [Errno 48] Address already in use`
+
+**Solution**: Kill existing processes using the ports:
+```bash
+# Find processes using ports 12345-12348
+lsof -i :12345
+lsof -i :12346
+lsof -i :12347
+lsof -i :12348
+
+# Kill the processes
+kill -9 <PID>
+```
+
+### Network Timeout
+
+**Problem**: Training server can't connect to CL1
+
+**Solution**:
+1. Verify CL1 interface is running first
+2. Check firewall allows UDP 12345-12348
+3. Verify IP addresses are correct
+4. Test network connectivity: `ping <cl1-host>`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get your first training session running
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/ppo-config">
+    Tune hyperparameters and feedback settings
+  </Card>
+</CardGroup>

@@ -1,0 +1,292 @@
+---
+title: EventFeedbackConfig Reference
+description: Configuration dataclass for event-based feedback stimulation with temporal difference (TD) error scaling
+---
+
+# EventFeedbackConfig
+
+The `EventFeedbackConfig` dataclass defines parameters for event-triggered feedback stimulation. Each in-game event (enemy kills, damage, armor pickup, etc.) can have its own feedback configuration that dynamically scales stimulation parameters based on TD error magnitude.
+
+## Core Parameters
+
+<ParamField path="channels" type="List[int]" required>
+  List of channel indices to stimulate when this event occurs. Each event should use a unique set of channels to provide distinct feedback signals.
+</ParamField>
+
+<ParamField path="base_frequency" type="float" required>
+  Base stimulation frequency in Hertz (Hz). This is the baseline frequency before any TD error scaling is applied.
+</ParamField>
+
+<ParamField path="base_amplitude" type="float" required>
+  Base stimulation amplitude in microamps (μA). This is the baseline amplitude before any TD error scaling is applied.
+</ParamField>
+
+<ParamField path="base_pulses" type="int" required>
+  Base number of pulses to deliver for this event. This is the baseline pulse count before any TD error scaling is applied.
+</ParamField>
+
+<ParamField path="info_key" type="str" required>
+  Key name used to identify this event in the game info dictionary. Used to trigger the appropriate feedback when events occur.
+</ParamField>
+
+## TD Error Configuration
+
+<ParamField path="td_sign" type="str" default="positive">
+  Which TD error signals trigger this feedback:
+  - `positive`: Only trigger on positive TD errors (better than expected)
+  - `negative`: Only trigger on negative TD errors (worse than expected)
+  - `absolute`: Trigger on any TD error magnitude
+</ParamField>
+
+## Frequency Scaling
+
+<ParamField path="freq_gain" type="float" default="0.9">
+  Gain multiplier for TD error to frequency scaling. Higher values make frequency more sensitive to TD error magnitude.
+</ParamField>
+
+<ParamField path="freq_max_scale" type="float" default="2.0">
+  Maximum scaling factor for frequency. Final frequency = `base_frequency * scale`, where scale is clamped to `[1.0, freq_max_scale]`.
+</ParamField>
+
+## Amplitude Scaling
+
+<ParamField path="amp_gain" type="float" default="0.35">
+  Gain multiplier for TD error to amplitude scaling. Higher values make amplitude more sensitive to TD error magnitude.
+</ParamField>
+
+<ParamField path="amp_max_scale" type="float" default="1.5">
+  Maximum scaling factor for amplitude. Final amplitude = `base_amplitude * scale`, where scale is clamped to `[1.0, amp_max_scale]`.
+</ParamField>
+
+## Pulse Count Scaling
+
+<ParamField path="pulse_gain" type="float" default="0.5">
+  Gain multiplier for TD error to pulse count scaling. Higher values make pulse count more sensitive to TD error magnitude.
+</ParamField>
+
+<ParamField path="pulse_max_scale" type="float" default="2.0">
+  Maximum scaling factor for pulse count. Final pulses = `base_pulses * scale`, where scale is clamped to `[1.0, pulse_max_scale]`.
+</ParamField>
+
+## Exponential Moving Average
+
+<ParamField path="ema_beta" type="float" default="0.99">
+  Beta parameter for exponential moving average of TD errors. Used to track baseline TD error magnitude for normalization. Higher values (closer to 1.0) result in slower adaptation.
+</ParamField>
+
+## Unpredictable Stimulation
+
+Some events (like taking damage) can optionally include unpredictable background stimulation to enhance learning through temporal contrast.
+
+<ParamField path="unpredictable" type="bool" default="true">
+  Whether to add unpredictable background stimulation for this event
+</ParamField>
+
+<ParamField path="unpredictable_frequency" type="float" default="5.0">
+  Frequency (Hz) for unpredictable background stimulation
+</ParamField>
+
+<ParamField path="unpredictable_duration_sec" type="float" default="1.0">
+  Duration in seconds for each unpredictable stimulation burst
+</ParamField>
+
+<ParamField path="unpredictable_rest_sec" type="float" default="1.0">
+  Rest period in seconds between unpredictable stimulation bursts
+</ParamField>
+
+<ParamField path="unpredictable_channels" type="Optional[List[int]]" default="None">
+  Specific channels to use for unpredictable stimulation. If None, uses the same channels as the main event feedback.
+</ParamField>
+
+<ParamField path="unpredictable_amplitude" type="Optional[float]" default="None">
+  Amplitude (μA) for unpredictable stimulation. If None, uses the base_amplitude value.
+</ParamField>
+
+## Default Event Configurations
+
+The `PPOConfig.event_feedback_settings` dictionary contains these default event configurations:
+
+<Expandable title="enemy_kill">
+  Positive feedback when the agent kills an enemy.
+  
+  ```python
+  EventFeedbackConfig(
+      channels=[35, 36, 38],
+      base_frequency=20.0,
+      base_amplitude=2.5,
+      base_pulses=40,
+      info_key='event_enemy_kill',
+      td_sign='positive',
+      freq_gain=0.20,
+      freq_max_scale=2.5,
+      amp_gain=0.20,
+      amp_max_scale=1.6,
+      pulse_gain=0.20,
+      pulse_max_scale=2.5
+  )
+  ```
+</Expandable>
+
+<Expandable title="armor_pickup">
+  Positive feedback when the agent picks up armor.
+  
+  ```python
+  EventFeedbackConfig(
+      channels=[39, 40, 43],
+      base_frequency=20.0,
+      base_amplitude=2.0,
+      base_pulses=35,
+      info_key='event_armor_pickup',
+      td_sign='positive',
+      freq_gain=0.30,
+      freq_max_scale=2.0,
+      amp_gain=0.30,
+      amp_max_scale=1.4,
+      pulse_gain=0.30,
+      pulse_max_scale=2.0
+  )
+  ```
+</Expandable>
+
+<Expandable title="took_damage">
+  Negative feedback when the agent takes damage. Includes unpredictable background stimulation.
+  
+  ```python
+  EventFeedbackConfig(
+      channels=[44, 47, 48],
+      base_frequency=90.0,
+      base_amplitude=2.2,
+      base_pulses=50,
+      info_key='event_took_damage',
+      td_sign='negative',
+      freq_gain=0.20,
+      freq_max_scale=2.5,
+      amp_gain=0.18,
+      amp_max_scale=1.7,
+      pulse_gain=0.20,
+      pulse_max_scale=2.5,
+      unpredictable=True,
+      unpredictable_frequency=5.0,
+      unpredictable_duration_sec=4.0,
+      unpredictable_rest_sec=4.0,
+      unpredictable_channels=[44, 47, 48],
+      unpredictable_amplitude=2.2
+  )
+  ```
+</Expandable>
+
+<Expandable title="ammo_waste">
+  Negative feedback when the agent wastes ammunition without hitting targets.
+  
+  ```python
+  EventFeedbackConfig(
+      channels=[52, 54, 55],
+      base_frequency=60.0,
+      base_amplitude=1.8,
+      base_pulses=25,
+      info_key='event_ammo_waste',
+      td_sign='negative',
+      freq_gain=0.15,
+      freq_max_scale=1.8,
+      amp_gain=0.15,
+      amp_max_scale=1.3,
+      pulse_gain=0.15,
+      pulse_max_scale=1.8
+  )
+  ```
+</Expandable>
+
+<Expandable title="approach_target">
+  Positive feedback when the agent moves closer to an enemy.
+  
+  ```python
+  EventFeedbackConfig(
+      channels=[5, 6, 11],
+      base_frequency=30.0,
+      base_amplitude=2.4,
+      base_pulses=28,
+      info_key='event_move_closer',
+      td_sign='positive',
+      freq_gain=0.25,
+      freq_max_scale=2.2,
+      amp_gain=0.10,
+      amp_max_scale=1.5,
+      pulse_gain=0.25,
+      pulse_max_scale=2.2
+  )
+  ```
+</Expandable>
+
+<Expandable title="retreat_target">
+  Negative feedback when the agent moves away from an enemy.
+  
+  ```python
+  EventFeedbackConfig(
+      channels=[12, 15, 16],
+      base_frequency=120.0,
+      base_amplitude=2.1,
+      base_pulses=32,
+      info_key='event_move_farther',
+      td_sign='negative',
+      freq_gain=0.25,
+      freq_max_scale=2.2,
+      amp_gain=0.10,
+      amp_max_scale=1.5,
+      pulse_gain=0.25,
+      pulse_max_scale=2.2
+  )
+  ```
+</Expandable>
+
+## Usage Example
+
+```python
+from ppo_doom import EventFeedbackConfig, PPOConfig
+
+# Create a custom event feedback configuration
+custom_event = EventFeedbackConfig(
+    channels=[1, 2, 3],
+    base_frequency=25.0,
+    base_amplitude=2.0,
+    base_pulses=40,
+    info_key='event_custom',
+    td_sign='positive',
+    freq_gain=0.3,
+    freq_max_scale=2.0,
+    amp_gain=0.2,
+    amp_max_scale=1.5
+)
+
+# Add to PPOConfig
+config = PPOConfig(
+    event_feedback_settings={
+        'custom_event': custom_event
+    }
+)
+
+# Or modify existing event settings
+config = PPOConfig()
+config.event_feedback_settings['enemy_kill'].base_frequency = 30.0
+config.event_feedback_settings['enemy_kill'].freq_gain = 0.4
+```
+
+## TD Error Scaling Formula
+
+The actual stimulation parameters are computed dynamically based on TD error magnitude:
+
+```python
+# Normalize TD error by exponential moving average
+td_normalized = abs(td_error) / (td_ema + epsilon)
+
+# Compute scaling factors (clamped to [1.0, max_scale])
+freq_scale = min(1.0 + freq_gain * td_normalized, freq_max_scale)
+amp_scale = min(1.0 + amp_gain * td_normalized, amp_max_scale)
+pulse_scale = min(1.0 + pulse_gain * td_normalized, pulse_max_scale)
+
+# Apply scaling
+final_frequency = base_frequency * freq_scale
+final_amplitude = base_amplitude * amp_scale
+final_pulses = int(base_pulses * pulse_scale)
+```
+
+This allows the feedback intensity to adapt based on how surprising the event is to the current policy.
