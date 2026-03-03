@@ -23,10 +23,9 @@ description: PPO reinforcement learning script for training biological neurons t
 <ParamField path="--mode" type="string" default="train">
   Execution mode for the script
   
-  **Choices:** `train`, `deploy`, `watch`
+  **Choices:** `train`, `watch`
   - `train`: Full training mode with CL1 hardware and gradient updates
-  - `deploy`: Run trained policy without gradient computation
-  - `watch`: Observe neural activity without training
+  - `watch`: Observe neural activity without training (inference mode)
 </ParamField>
 
 <ParamField path="--checkpoint" type="string" default="None">
@@ -110,11 +109,11 @@ python ppo_doom.py \
   --device cuda
 ```
 
-### Deployment (No Gradient Updates)
+### Watch Mode (Inference Only)
 
 ```bash
 python ppo_doom.py \
-  --mode deploy \
+  --mode watch \
   --checkpoint checkpoints/best_model.pt \
   --show_window \
   --tick_frequency_hz 30
@@ -125,13 +124,13 @@ python ppo_doom.py \
 ```bash
 # Test decoder with zero spike input
 python ppo_doom.py \
-  --mode deploy \
+  --mode train \
   --checkpoint checkpoints/model.pt \
   --decoder-ablation zero
 
 # Test decoder with random spike input
 python ppo_doom.py \
-  --mode deploy \
+  --mode train \
   --checkpoint checkpoints/model.pt \
   --decoder-ablation random
 ```

@@ -27,10 +27,9 @@ description: Remote training server that communicates with CL1 hardware over UDP
 <ParamField path="--mode" type="string" default="train">
   Execution mode for the training server
   
-  **Choices:** `train`, `deploy`, `watch`
+  **Choices:** `train`, `watch`
   - `train`: Full training mode with gradient updates
-  - `deploy`: Run trained policy without gradient computation
-  - `watch`: Observe neural activity without training
+  - `watch`: Observe neural activity without training (inference mode)
 </ParamField>
 
 <ParamField path="--checkpoint" type="string" default="None">
@@ -205,11 +204,11 @@ python training_server.py \
   --max-episodes 20000
 ```
 
-### Deployment Mode
+### Watch Mode (Inference)
 
 ```bash
 python training_server.py \
-  --mode deploy \
+  --mode watch \
   --checkpoint checkpoints/best_model.pt \
   --cl1-host 192.168.1.100 \
   --show_window
